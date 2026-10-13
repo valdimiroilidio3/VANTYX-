@@ -324,7 +324,7 @@ export function searchForPos(
            FROM products p LEFT JOIN product_variants v ON v.product_id = p.id AND v.id = ?
            WHERE p.org_id = ? AND p.id = ?`,
         )
-        .all(orgId, barcodeRow.variant_id, barcodeRow.product_id) as (ProductRow & VariantCols)[])
+        .all(barcodeRow.variant_id, orgId, barcodeRow.product_id) as (ProductRow & VariantCols)[])
     : (db
         .prepare(
           `SELECT p.*, v.id as v_id, v.label as v_label, v.sku as v_sku, v.price_cents as v_price,

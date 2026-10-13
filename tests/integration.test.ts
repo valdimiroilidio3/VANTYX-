@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { getDb } from "@/lib/db/client";
 import { ApiError } from "@/lib/auth/context";
 import { createOrganization, completeOnboarding } from "@/lib/services/org.service";
-import { createCategory, createProduct, listProducts } from "@/lib/services/catalog.service";
+import { createCategory, createProduct, listProducts, searchForPos } from "@/lib/services/catalog.service";
 import { adjustStock } from "@/lib/services/inventory.service";
 import { checkout, createReturn, getSaleDetail, listSales, voidSale } from "@/lib/services/sales.service";
 import { createSupplier, createPurchaseOrder, getPurchaseOrder, receivePurchaseOrder } from "@/lib/services/purchasing.service";
@@ -114,6 +114,17 @@ describe("catálogo", () => {
       name: "Outro", sku: "TST-0002", basePriceCents: 100, taxRateBps: 2300, unit: "un",
       barcodes: [{ code: "5600123000014" }],
     }, ownerActor), 409);
+  });
+
+  it("searchForPos encontra produto por código de barras exato, SKU e nome (regressão)", () => {
+    const byCode = searchForPos(orgA.orgId, "5600123000014", { limit: 5 });
+    expect(byCode).toHaveLength(1);
+    expect(byCode[0]!.productId).toBe(prodA);
+    expect(byCode[0]!.priceCents).toBe(1000);
+    const bySku = searchForPos(orgA.orgId, "TST-0001", { limit: 5 });
+    expect(bySku.some((r) => r.productId === prodA)).toBe(true);
+    const byName = searchForPos(orgA.orgId, "Maçã", { limit: 5 });
+    expect(byName.some((r) => r.productId === prodA)).toBe(true);
   });
 
   it("rejeita EAN-13 com dígito de controlo inválido", () => {
