@@ -1,0 +1,57 @@
+import {
+  ScanBarcode,
+  Receipt,
+  Package,
+  Warehouse,
+  Users,
+  Banknote,
+  BarChart3,
+  UtensilsCrossed,
+  ChefHat,
+  CalendarClock,
+  ClipboardCheck,
+  Tag,
+  Truck,
+  Factory,
+  Scale,
+  PlugZap,
+  Landmark,
+  LayoutDashboard,
+  Settings,
+  Bell,
+  Wrench,
+  CircuitBoard,
+  CalendarDays,
+  type LucideIcon,
+} from "lucide-react";
+
+/** Maps module-registry icon names to Lucide components. */
+export const ICON_MAP: Record<string, LucideIcon> = {
+  "scan-barcode": ScanBarcode,
+  receipt: Receipt,
+  package: Package,
+  warehouse: Warehouse,
+  users: Users,
+  banknote: Banknote,
+  "bar-chart-3": BarChart3,
+  "utensils-crossed": UtensilsCrossed,
+  "chef-hat": ChefHat,
+  "calendar-clock": CalendarClock,
+  "clipboard-check": ClipboardCheck,
+  tag: Tag,
+  truck: Truck,
+  factory: Factory,
+  scale: Scale,
+  "plug-zap": PlugZap,
+  landmark: Landmark,
+  "layout-dashboard": LayoutDashboard,
+  settings: Settings,
+  bell: Bell,
+  wrench: Wrench,
+  "circuit-board": CircuitBoard,
+  "calendar-days": CalendarDays,
+};
+
+export function iconFor(name: string): LucideIcon {
+  return ICON_MAP[name] ?? Package;
+}

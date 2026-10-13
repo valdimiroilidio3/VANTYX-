@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* VANTYX® brand palette */
+  --color-graphite-950: #0a0b0d;
+  --color-graphite-900: #101114; /* deep graphite (dark background) */
+  --color-graphite-850: #14161a;
+  --color-graphite-800: #191b20; /* elevated surface */
+  --color-graphite-700: #23262d;
+  --color-graphite-600: #2e323b;
+  --color-graphite-500: #454a56;
+  --color-graphite-400: #6b7280;
+  --color-graphite-300: #9ca3af;
+
+  --color-mist-50: #f7f8fa; /* light background */
+  --color-mist-100: #eef0f4;
+  --color-mist-200: #e2e5eb;
+  --color-mist-300: #cdd2dc;
+
+  --color-lime-brand: #b9ff00; /* signature accent */
+  --color-lime-dim: #9ad400;
+  --color-lime-soft: #d9ff7a;
+
+  --color-success: #22c55e;
+  --color-success-soft: #16a34a;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+
+  --radius-card: 0.625rem;
+}
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-mist-50 text-graphite-900 antialiased dark:bg-graphite-900 dark:text-mist-100;
+  font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+}
+
+/* Consistent, subtle scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-graphite-500) transparent;
+}
+
+/* Focus visibility for keyboard operation */
+:focus-visible {
+  outline: 2px solid var(--color-lime-brand);
+  outline-offset: 1px;
+}
+
+@layer components {
+  .card {
+    @apply rounded-[10px] border border-mist-200 bg-white shadow-sm dark:border-graphite-700 dark:bg-graphite-800;
+  }
+  .input-base {
+    @apply w-full rounded-md border border-mist-300 bg-white px-3 py-2 text-sm text-graphite-900 placeholder:text-graphite-400 focus:border-lime-dim focus:outline-none focus:ring-2 focus:ring-lime-brand/30 disabled:cursor-not-allowed disabled:opacity-50 dark:border-graphite-600 dark:bg-graphite-850 dark:text-mist-100 dark:placeholder:text-graphite-500;
+  }
+  .label-base {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wide text-graphite-500 dark:text-graphite-300;
+  }
+  .table-base {
+    @apply w-full border-collapse text-sm;
+  }
+  .table-base th {
+    @apply border-b border-mist-200 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-graphite-500 dark:border-graphite-700 dark:text-graphite-300;
+  }
+  .table-base td {
+    @apply border-b border-mist-100 px-3 py-2 align-middle dark:border-graphite-700/60;
+  }
+  .table-base tbody tr:hover {
+    @apply bg-mist-50 dark:bg-graphite-700/40;
+  }
+}
+
+@keyframes vx-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.skeleton {
+  @apply rounded-md bg-mist-200 dark:bg-graphite-700;
+  animation: vx-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes vx-slide-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: vx-slide-in 0.18s ease-out;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80mm;
+  }
+}
