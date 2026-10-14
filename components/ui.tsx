@@ -33,15 +33,15 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const buttonStyles: Record<ButtonVariant, string> = {
   primary:
-    "bg-graphite-900 text-mist-50 hover:bg-graphite-700 dark:bg-mist-100 dark:text-graphite-900 dark:hover:bg-white border border-transparent",
+    "bg-graphite-900 text-mist-50 shadow-sm hover:bg-graphite-800 hover:shadow-md dark:bg-mist-100 dark:text-graphite-900 dark:hover:bg-white border border-transparent",
   accent:
-    "bg-lime-brand text-graphite-900 hover:bg-lime-soft border border-transparent font-semibold",
+    "bg-gradient-to-b from-lime-soft to-lime-brand text-graphite-950 border border-transparent font-semibold shadow-glow-lime hover:brightness-[1.04]",
   secondary:
-    "bg-white text-graphite-800 border border-mist-300 hover:bg-mist-100 dark:bg-graphite-800 dark:text-mist-100 dark:border-graphite-600 dark:hover:bg-graphite-700",
+    "bg-white/80 text-graphite-800 border border-mist-300 shadow-xs hover:bg-mist-100 hover:border-graphite-300 dark:bg-graphite-800/80 dark:text-mist-100 dark:border-graphite-600 dark:hover:bg-graphite-700",
   ghost:
     "bg-transparent text-graphite-600 hover:bg-mist-100 dark:text-graphite-300 dark:hover:bg-graphite-700 border border-transparent",
   danger:
-    "bg-danger text-white hover:bg-red-600 border border-transparent",
+    "bg-danger text-white shadow-sm hover:bg-red-600 hover:shadow-md border border-transparent",
 };
 
 const buttonSizes: Record<ButtonSize, string> = {
@@ -63,7 +63,7 @@ export function Button({
   return (
     <button
       className={clsx(
-        "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors",
+        "inline-flex items-center justify-center gap-1.5 rounded-xl font-medium transition-all duration-150 active:scale-[0.97]",
         "disabled:pointer-events-none disabled:opacity-50",
         buttonStyles[variant],
         buttonSizes[size],
@@ -260,7 +260,7 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-graphite-950/50 p-4 backdrop-blur-md"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
@@ -268,7 +268,7 @@ export function Modal({
     >
       <div
         className={clsx(
-          "animate-slide-in card flex max-h-[90vh] w-full flex-col overflow-hidden",
+          "animate-slide-in card glass-strong flex max-h-[90vh] w-full flex-col overflow-hidden shadow-2xl",
           wide ? "max-w-3xl" : "max-w-lg",
         )}
         onClick={(e) => e.stopPropagation()}
@@ -312,9 +312,11 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
-      <span className="text-graphite-400">{icon ?? <Inbox className="h-8 w-8" />}</span>
-      <p className="text-sm font-semibold">{title}</p>
+    <div className="animate-fade-up flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+      <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-lime-brand/25 via-lime-brand/10 to-sky-400/20 text-lime-dim shadow-inner ring-1 ring-black/5 dark:text-lime-brand dark:ring-white/10">
+        {icon ?? <Inbox className="h-6 w-6" />}
+      </span>
+      <p className="text-sm font-semibold tracking-tight">{title}</p>
       {message && (
         <p className="max-w-sm text-xs leading-relaxed text-graphite-400">{message}</p>
       )}
@@ -445,7 +447,7 @@ export function Stat({
       </p>
       <p
         className={clsx(
-          "mt-1 font-mono text-xl font-semibold tabular-nums",
+          "mt-1 font-mono text-2xl font-bold tracking-tight tabular-nums",
           tone === "accent" && "text-lime-dim dark:text-lime-brand",
         )}
       >

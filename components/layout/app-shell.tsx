@@ -81,10 +81,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const branchTerminals = workspace.terminals.filter((t) => t.branchId === workspace.branchId);
 
   const sidebar = (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-graphite-700 bg-graphite-850 dark:bg-graphite-950">
+    <aside className="relative flex h-full w-60 shrink-0 flex-col overflow-hidden border-r border-white/[0.07] bg-graphite-900/95 backdrop-blur-xl dark:bg-graphite-950/95">
+      <div className="pointer-events-none absolute -top-24 -left-16 h-64 w-64 rounded-full bg-lime-brand/10 blur-3xl" aria-hidden />
       <div className="flex items-center gap-2 px-4 py-4">
         <Link href="/dashboard" className="flex items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-lime-brand font-mono text-sm font-black text-graphite-900">
+          <span className="shadow-glow-lime flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-b from-lime-soft to-lime-brand font-mono text-sm font-black text-graphite-950">
             V
           </span>
           <span className="font-mono text-sm font-bold tracking-widest text-mist-100">
@@ -126,10 +127,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       href={item.path}
                       aria-current={active ? "page" : undefined}
                       className={clsx(
-                        "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[13px] font-medium transition-colors",
+                        "flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-[13px] font-medium transition-all duration-150",
                         active
-                          ? "bg-graphite-700/70 text-lime-brand"
-                          : "text-graphite-300 hover:bg-graphite-800 hover:text-mist-100",
+                          ? "bg-lime-brand/12 text-lime-brand ring-1 ring-lime-brand/25 shadow-[0_0_18px_-6px_rgba(185,255,0,0.4)]"
+                          : "text-graphite-300 hover:bg-white/5 hover:text-mist-100 active:scale-[0.98]",
                       )}
                     >
                       <Icon className="h-4 w-4 shrink-0" />
@@ -164,7 +165,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-13 shrink-0 items-center gap-2 border-b border-mist-200 bg-white px-3 dark:border-graphite-700 dark:bg-graphite-850">
+        <header className="glass-strong z-30 flex h-13 shrink-0 items-center gap-2 border-x-0 border-t-0 px-3">
           <button
             className="rounded p-1.5 text-graphite-500 hover:bg-mist-100 dark:hover:bg-graphite-700 lg:hidden"
             onClick={() => setSidebarOpen(true)}

@@ -12,6 +12,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { clsx } from "clsx";
+import Image from "next/image";
 import {
   ArrowLeft,
   ArrowRight,
@@ -41,6 +42,26 @@ const INDUSTRIES = [
   { key: "pet", label: "Pet Shop", icon: "paw-print", desc: "Espécies, lotes/validades, packs." },
   { key: "services", label: "Serviços & Multi-Filial", icon: "briefcase", desc: "Serviços e estruturas multi-local." },
 ] as const;
+
+/** Fotografia real por setor (tiles do onboarding). Setores sem foto usam gradiente. */
+const INDUSTRY_PHOTOS: Record<string, string> = {
+  supermarket: "/images/industries/supermarket.jpg",
+  restaurant: "/images/industries/restaurant.jpg",
+  fashion: "/images/industries/fashion.jpg",
+  auto_parts: "/images/industries/auto_parts.jpg",
+  salon: "/images/industries/salon.jpg",
+  electronics: "/images/industries/electronics.jpg",
+  wholesale: "/images/industries/wholesale.jpg",
+  construction: "/images/industries/construction.jpg",
+};
+
+const INDUSTRY_GRADIENTS: Record<string, string> = {
+  pharmacy: "linear-gradient(135deg,#34d399 0%,#0ea5e9 100%)",
+  bookstore: "linear-gradient(135deg,#f59e0b 0%,#ef4444 100%)",
+  furniture: "linear-gradient(135deg,#a78bfa 0%,#6366f1 100%)",
+  pet: "linear-gradient(135deg,#f472b6 0%,#fb923c 100%)",
+  services: "linear-gradient(135deg,#38bdf8 0%,#818cf8 100%)",
+};
 
 const SUBTYPES: Record<string, { key: string; label: string }[]> = {
   supermarket: [
@@ -361,9 +382,11 @@ function OnboardingWizard() {
               <p className="text-xs text-graphite-400">
                 O setor determina módulos, dashboards, modo de checkout e regras iniciais. Poderá ser alterado mais tarde com migração controlada (os dados nunca são transformados automaticamente).
               </p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {INDUSTRIES.map((ind) => {
                   const Icon = iconFor(ind.icon);
+                  const photo = INDUSTRY_PHOTOS[ind.key];
+                  const selected = industry === ind.key;
                   return (
                     <button
                       key={ind.key}
@@ -372,18 +395,33 @@ function OnboardingWizard() {
                         setSubIndustry(SUBTYPES[ind.key]?.[0]?.key ?? "");
                       }}
                       className={clsx(
-                        "flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors",
-                        industry === ind.key
-                          ? "border-lime-brand bg-lime-brand/10"
-                          : "border-mist-200 hover:border-graphite-400 dark:border-graphite-600",
+                        "hover-lift group relative h-40 overflow-hidden rounded-2xl text-left ring-1 ring-black/5 transition-shadow dark:ring-white/10",
+                        selected ? "shadow-glow-lime ring-2 ring-lime-brand" : "",
                       )}
+                      style={!photo ? { backgroundImage: INDUSTRY_GRADIENTS[ind.key] ?? "linear-gradient(135deg,#334155,#0f172a)" } : undefined}
+                      aria-pressed={selected}
                     >
-                      <Icon className={clsx("mt-0.5 h-4 w-4 shrink-0", industry === ind.key ? "text-lime-dim dark:text-lime-brand" : "text-graphite-400")} />
-                      <span>
-                        <span className="block text-xs font-semibold">{ind.label}</span>
-                        <span className="mt-0.5 block text-[11px] leading-snug text-graphite-400">{ind.desc}</span>
+                      {photo && (
+                        <>
+                          <Image src={photo} alt="" fill sizes="(max-width: 640px) 100vw, 33vw" className="object-cover transition-transform duration-500 group-hover:scale-105" />
+                          <span className="absolute inset-0 bg-gradient-to-t from-graphite-950/90 via-graphite-950/35 to-transparent" aria-hidden />
+                        </>
+                      )}
+                      <span className={clsx(
+                        "absolute top-2.5 left-2.5 flex h-8 w-8 items-center justify-center rounded-xl backdrop-blur-md",
+                        photo ? "bg-white/15 text-white ring-1 ring-white/25" : "bg-white/20 text-white ring-1 ring-white/30",
+                      )}>
+                        <Icon className="h-4 w-4" />
                       </span>
-                      {industry === ind.key && <Check className="ml-auto h-4 w-4 shrink-0 text-lime-brand" />}
+                      {selected && (
+                        <span className="absolute top-2.5 right-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-lime-brand text-graphite-950 shadow-glow-lime">
+                          <Check className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                      <span className="absolute inset-x-0 bottom-0 p-3">
+                        <span className={clsx("block text-sm font-bold tracking-tight", photo ? "text-white" : "text-white")}>{ind.label}</span>
+                        <span className={clsx("mt-0.5 block text-[11px] leading-snug", photo ? "text-mist-200/85" : "text-white/80")}>{ind.desc}</span>
+                      </span>
                     </button>
                   );
                 })}

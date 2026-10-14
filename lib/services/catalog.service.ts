@@ -32,6 +32,7 @@ export interface ProductInput {
   shelfLifeDays?: number | null;
   trackBatches?: boolean;
   trackSerials?: boolean;
+  imageUrl?: string | null;
   barcodes?: { code: string; variantId?: string | null; embeddedKind?: "price" | "weight" | null }[];
   variants?: VariantInput[];
 }
@@ -86,10 +87,10 @@ export function createProduct(
     db.prepare(
       `INSERT INTO products
         (id, org_id, type, name, description, category_id, sku, base_price_cents, cost_cents,
-         tax_rate_bps, unit, sale_mode, track_stock, allow_negative, status, attributes,
+         tax_rate_bps, unit, sale_mode, track_stock, allow_negative, status, attributes, image_url,
          supplier_id, reorder_point_milli, reorder_qty_milli, shelf_life_days,
          track_batches, track_serials, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       productId, orgId, input.type ?? "simple", input.name.trim(), input.description ?? null,
       input.categoryId ?? null, input.sku.trim().toUpperCase(), input.basePriceCents,
@@ -97,7 +98,7 @@ export function createProduct(
       input.saleMode ?? "units", input.trackStock === false ? 0 : 1,
       input.allowNegative == null ? null : input.allowNegative ? 1 : 0,
       input.status ?? "active", JSON.stringify(input.attributes ?? {}),
-      input.supplierId ?? null, input.reorderPointMilli ?? null,
+      input.imageUrl ?? null, input.supplierId ?? null, input.reorderPointMilli ?? null,
       input.reorderQtyMilli ?? null, input.shelfLifeDays ?? null,
       input.trackBatches ? 1 : 0, input.trackSerials ? 1 : 0,
       actor.userId, now, now,

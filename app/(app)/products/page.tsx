@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { clsx } from "clsx";
+import { ProductImage } from "@/components/product-image";
 import {
   Download,
   FileUp,
@@ -376,8 +377,13 @@ export default function ProductsPage() {
                 {rows.map((p) => (
                   <tr key={p.id} className="hover:bg-mist-50 dark:hover:bg-graphite-800/60">
                     <td className="px-3 py-2">
-                      <p className="font-semibold">{p.name}</p>
-                      <p className="text-[10px] text-graphite-400">{p.type !== "simple" ? p.type : ""}</p>
+                      <div className="flex items-center gap-2.5">
+                        <ProductImage src={p.image_url} name={p.name} className="h-9 w-9" rounded="rounded-lg" />
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold">{p.name}</p>
+                          <p className="text-[10px] text-graphite-400">{p.type !== "simple" ? p.type : ""}</p>
+                        </div>
+                      </div>
                     </td>
                     <td className="px-3 py-2 font-mono">{p.sku}</td>
                     <td className="px-3 py-2">{catLabel(p.category_id)}</td>

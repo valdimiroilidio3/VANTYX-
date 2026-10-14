@@ -48,6 +48,7 @@ import {
   type PosSearchResult,
 } from "@/lib/pos/cart";
 import { PaymentModal, type PaymentDraft, type PaymentMethodOption } from "@/components/pos/payment-modal";
+import { ProductImage } from "@/components/product-image";
 import { SupervisorModal } from "@/components/pos/supervisor-modal";
 import { ReceiptModal, type ReceiptVM } from "@/components/pos/receipt-modal";
 
@@ -578,12 +579,13 @@ export default function PosPage() {
                     key={key}
                     onClick={() => selectResult(r, null)}
                     className={clsx(
-                      "group rounded-lg border p-2.5 text-left transition-colors",
+                      "hover-lift group rounded-2xl border p-2.5 text-left",
                       lowStock
                         ? "border-amber-500/40 bg-amber-500/5"
                         : "border-mist-200 hover:border-lime-brand dark:border-graphite-600",
                     )}
                   >
+                    <ProductImage src={r.image} name={r.variantLabel ?? r.name} className="mb-2 h-14 w-full" rounded="rounded-lg" />
                     <span className="flex items-start justify-between gap-1">
                       <span className="min-w-0">
                         <span className="block truncate text-xs font-semibold">{r.name}</span>

@@ -34,7 +34,7 @@
     "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
 
-  --radius-card: 0.625rem;
+  --radius-card: 1rem;
 }
 
 :root {
@@ -48,6 +48,11 @@
 html,
 body {
   height: 100%;
+}
+
+::selection {
+  background: var(--color-lime-brand);
+  color: var(--color-graphite-950);
 }
 
 body {
@@ -69,10 +74,18 @@ body {
 
 @layer components {
   .card {
-    @apply rounded-[10px] border border-mist-200 bg-white shadow-sm dark:border-graphite-700 dark:bg-graphite-800;
+    @apply rounded-2xl border border-black/[0.07] bg-white dark:border-white/[0.09] dark:bg-graphite-800;
+    box-shadow:
+      0 1px 2px rgb(10 11 13 / 0.04),
+      0 10px 28px -18px rgb(10 11 13 / 0.22);
+  }
+  .dark .card {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.04),
+      0 16px 40px -24px rgb(0 0 0 / 0.65);
   }
   .input-base {
-    @apply w-full rounded-md border border-mist-300 bg-white px-3 py-2 text-sm text-graphite-900 placeholder:text-graphite-400 focus:border-lime-dim focus:outline-none focus:ring-2 focus:ring-lime-brand/30 disabled:cursor-not-allowed disabled:opacity-50 dark:border-graphite-600 dark:bg-graphite-850 dark:text-mist-100 dark:placeholder:text-graphite-500;
+    @apply w-full rounded-xl border border-mist-300 bg-white px-3 py-2 text-sm text-graphite-900 shadow-xs transition-shadow placeholder:text-graphite-400 focus:border-lime-dim focus:outline-none focus:ring-4 focus:ring-lime-brand/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-graphite-600 dark:bg-graphite-850 dark:text-mist-100 dark:placeholder:text-graphite-500;
   }
   .label-base {
     @apply mb-1 block text-xs font-medium uppercase tracking-wide text-graphite-500 dark:text-graphite-300;
@@ -102,7 +115,7 @@ body {
 }
 
 .skeleton {
-  @apply rounded-md bg-mist-200 dark:bg-graphite-700;
+  @apply rounded-lg bg-mist-200 dark:bg-graphite-700;
   animation: vx-pulse 1.4s ease-in-out infinite;
 }
 
@@ -119,6 +132,72 @@ body {
 
 .animate-slide-in {
   animation: vx-slide-in 0.18s ease-out;
+}
+
+/* ------------------------- Apple-style surface utilities ------------------------- */
+
+.glass {
+  @apply border border-black/[0.06] bg-white/70 backdrop-blur-xl dark:border-white/[0.09] dark:bg-graphite-900/60;
+}
+
+.glass-strong {
+  @apply border border-black/[0.06] bg-white/85 backdrop-blur-2xl dark:border-white/[0.1] dark:bg-graphite-850/80;
+}
+
+.hover-lift {
+  transition:
+    transform 0.22s cubic-bezier(0.2, 0.7, 0.3, 1),
+    box-shadow 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 2px 4px rgb(10 11 13 / 0.05),
+    0 20px 40px -20px rgb(10 11 13 / 0.3);
+}
+
+.text-gradient-brand {
+  background-image: linear-gradient(100deg, #d9ff7a 0%, #b9ff00 42%, #4ade80 68%, #38bdf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.shadow-glow-lime {
+  box-shadow:
+    0 0 0 1px rgb(185 255 0 / 0.25),
+    0 8px 26px -8px rgb(185 255 0 / 0.5);
+}
+
+.bg-mesh-dark {
+  background-image: url("/images/mesh-dark.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+.bg-mesh-light {
+  background-image: url("/images/mesh-light.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+@keyframes vx-fade-up {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fade-up {
+  animation: vx-fade-up 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+.animate-fade-up-slow {
+  animation: vx-fade-up 0.7s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 
 @media print {
