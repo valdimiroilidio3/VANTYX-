@@ -114,9 +114,10 @@ export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResul
 
   const returnLines = db
     .prepare(
-      `SELECT return_id, product_id, name_snapshot, qty_milli, unit_price_cents,
-              tax_rate_bps, total_cents, tax_cents
-       FROM return_lines WHERE org_id = ? ORDER BY return_id`,
+      `SELECT rl.return_id, sl.product_id, sl.name_snapshot, sl.sku_snapshot, rl.qty_milli,
+              rl.unit_price_cents, rl.tax_rate_bps, rl.total_cents, rl.tax_cents, sl.unit
+       FROM return_lines rl JOIN sale_lines sl ON sl.id = rl.sale_line_id
+       WHERE rl.org_id = ? ORDER BY rl.return_id`,
     )
     .all(orgId) as Record<string, unknown>[];
   const linesByReturn = new Map<string, Record<string, unknown>[]>();
