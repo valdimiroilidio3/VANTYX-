@@ -27,9 +27,9 @@ const schema = z.discriminatedUnion("action", [
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("notifications.view");
   if (body.action === "read") {
-    markNotificationRead(ctx.orgId, body.notificationId);
+    await markNotificationRead(ctx.orgId, body.notificationId);
   } else {
-    markAllRead(ctx.orgId);
+    await markAllRead(ctx.orgId);
   }
   return listNotifications(ctx.orgId, { limit: 30 });
 }, schema);

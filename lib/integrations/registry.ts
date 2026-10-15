@@ -207,11 +207,11 @@ export interface OrgIntegrationState {
   missing: string[];
 }
 
-export function listIntegrationStates(orgId: string): OrgIntegrationState[] {
+export async function listIntegrationStates(orgId: string): Promise<OrgIntegrationState[]> {
   const db = getDb();
-  const rows = db
+  const rows = (await db
     .prepare(`SELECT * FROM integrations WHERE org_id = ?`)
-    .all(orgId) as {
+    .all(orgId)) as {
     key: string;
     status: string;
     config: string;
@@ -243,15 +243,15 @@ export function listIntegrationStates(orgId: string): OrgIntegrationState[] {
   });
 }
 
-export function saveIntegrationConfig(
+export async function saveIntegrationConfig(
   orgId: string,
   key: string,
   config: Record<string, unknown>,
   credentialsSet: boolean,
-): void {
+): Promise<void> {
   const db = getDb();
   const now = Date.now();
-  db.prepare(
+  await db.prepare(
     `INSERT INTO integrations (org_id, key, status, config, credentials_set, updated_at)
      VALUES (?, ?, 'configured', ?, ?, ?)
      ON CONFLICT(org_id, key) DO UPDATE SET
@@ -266,7 +266,7 @@ export interface IntegrationTestResult {
 }
 
 /** Connection test — honest results only. */
-export function testIntegration(orgId: string, key: string): IntegrationTestResult {
+export async function testIntegration(orgId: string, key: string): Promise<IntegrationTestResult> {
   const definition = getIntegrationDefinition(key);
   if (!definition) return { ok: false, message: "Integração desconhecida." };
   const db = getDb();
@@ -280,7 +280,7 @@ export function testIntegration(orgId: string, key: string): IntegrationTestResu
           : "Pronto: usa a pipeline de impressão do browser. Teste imprimindo um talão de venda.",
     };
   } else {
-    const row = db.prepare(`SELECT credentials_set, config FROM integrations WHERE org_id = ? AND key = ?`).get(orgId, key) as { credentials_set: number; config: string } | undefined;
+    const row = (await db.prepare(`SELECT credentials_set, config FROM integrations WHERE org_id = ? AND key = ?`).get(orgId, key)) as { credentials_set: number; config: string } | undefined;
     if (!row || row.credentials_set !== 1) {
       result = {
         ok: false,
@@ -293,7 +293,7 @@ export function testIntegration(orgId: string, key: string): IntegrationTestResu
       };
     }
   }
-  db.prepare(
+  await db.prepare(
     `INSERT INTO integrations (org_id, key, status, config, credentials_set, last_test_at, last_error, updated_at)
      VALUES (?, ?, ?, '{}', 0, ?, ?, ?)
      ON CONFLICT(org_id, key) DO UPDATE SET last_test_at = excluded.last_test_at, last_error = excluded.last_error, updated_at = excluded.updated_at`,

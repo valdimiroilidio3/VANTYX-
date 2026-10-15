@@ -22,7 +22,7 @@ const holdSchema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("pos.hold");
-  const id = holdSale(ctx.orgId, {
+  const id = await holdSale(ctx.orgId, {
     branchId: body.branchId,
     terminalId: body.terminalId ?? null,
     userId: ctx.userId,

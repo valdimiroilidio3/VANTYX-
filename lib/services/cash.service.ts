@@ -31,7 +31,7 @@ export interface CashSessionRow {
   totals: string | null;
 }
 
-export function openSession(
+export async function openSession(
   orgId: string,
   data: {
     branchId: string;
@@ -40,31 +40,31 @@ export function openSession(
     shiftLabel?: string;
     actor: { userId: string; label: string };
   },
-): { sessionId: string } {
+): Promise<{ sessionId: string }> {
   if (data.openingFloatCents < 0) badRequest("Fundo inicial não pode ser negativo.");
   const db = getDb();
-  const existing = db
+  const existing = (await db
     .prepare(`SELECT id FROM cash_sessions WHERE terminal_id = ? AND status = 'open'`)
-    .get(data.terminalId) as { id: string } | undefined;
+    .get(data.terminalId)) as { id: string } | undefined;
   if (existing) {
     throw new ApiError(409, "Já existe uma sessão de caixa aberta neste terminal.", "session_already_open");
   }
   const sessionId = newId("cs");
   let shiftId: string | null = null;
-  tx(db, () => {
+  await tx(db, async () => {
     if (data.shiftLabel !== undefined) {
       shiftId = newId("shift");
-      db.prepare(
+      await db.prepare(
         `INSERT INTO shifts (id, org_id, branch_id, user_id, label, started_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
       ).run(shiftId, orgId, data.branchId, data.actor.userId, data.shiftLabel || null, Date.now());
     }
-    db.prepare(
+    await db.prepare(
       `INSERT INTO cash_sessions
         (id, org_id, branch_id, terminal_id, shift_id, status, opening_float_cents, opened_by, opened_at)
        VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
     ).run(sessionId, orgId, data.branchId, data.terminalId, shiftId, data.openingFloatCents, data.actor.userId, Date.now());
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: data.actor.userId, actorLabel: data.actor.label,
         action: "cash.open", resourceType: "cash_session", resourceId: sessionId,
@@ -74,7 +74,7 @@ export function openSession(
       db,
     );
   });
-  emitDomainEvent("cash.session_opened", { orgId, sessionId, by: data.actor.userId });
+  await emitDomainEvent("cash.session_opened", { orgId, sessionId, by: data.actor.userId });
   return { sessionId };
 }
 
@@ -93,48 +93,48 @@ export interface SessionCounters {
   expectedCashCents: number;
 }
 
-export function computeSessionCounters(
+export async function computeSessionCounters(
   orgId: string,
   sessionId: string,
-): SessionCounters {
+): Promise<SessionCounters> {
   const db = getDb();
-  const sales = db
+  const sales = (await db
     .prepare(
       `SELECT COALESCE(SUM(total_cents),0) gross, COALESCE(SUM(net_cents),0) net,
               COALESCE(SUM(tax_cents),0) tax, COALESCE(SUM(discount_cents),0) disc, COUNT(*) c
        FROM sales WHERE cash_session_id = ? AND org_id = ? AND status != 'void'`,
     )
-    .get(sessionId, orgId) as { gross: number; net: number; tax: number; disc: number; c: number };
+    .get(sessionId, orgId)) as { gross: number; net: number; tax: number; disc: number; c: number };
 
-  const byMethodRows = db
+  const byMethodRows = (await db
     .prepare(
       `SELECT sp.method_key, COALESCE(SUM(sp.amount_cents),0) total
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
        WHERE s.cash_session_id = ? AND s.org_id = ? AND s.status != 'void' AND sp.status = 'confirmed'
        GROUP BY sp.method_key`,
     )
-    .all(sessionId, orgId) as { method_key: string; total: number }[];
+    .all(sessionId, orgId)) as { method_key: string; total: number }[];
   const byMethod: Record<string, number> = {};
   for (const row of byMethodRows) byMethod[row.method_key] = row.total;
 
-  const cashMethods = db
+  const cashMethods = (await db
     .prepare(`SELECT key FROM payment_methods WHERE org_id = ? AND is_cash = 1`)
-    .all(orgId) as { key: string }[];
+    .all(orgId)) as { key: string }[];
   const cashKeys = new Set(cashMethods.map((m) => m.key));
   const cashSalesCents = byMethodRows
     .filter((r) => cashKeys.has(r.method_key))
     .reduce((a, r) => a + r.total, 0);
 
   // Change given reduces drawer cash
-  const changeRow = db
+  const changeRow = (await db
     .prepare(
       `SELECT COALESCE(SUM(sp.change_cents),0) change_total
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
        WHERE s.cash_session_id = ? AND s.org_id = ? AND s.status != 'void'`,
     )
-    .get(sessionId, orgId) as { change_total: number };
+    .get(sessionId, orgId)) as { change_total: number };
 
-  const returnsRows = db
+  const returnsRows = (await db
     .prepare(
       `SELECT rp.method_key, COALESCE(SUM(rp.amount_cents),0) total
        FROM return_payments rp
@@ -143,23 +143,23 @@ export function computeSessionCounters(
        WHERE s.cash_session_id = ? AND r.org_id = ? AND r.status = 'completed'
        GROUP BY rp.method_key`,
     )
-    .all(sessionId, orgId) as { method_key: string; total: number }[];
+    .all(sessionId, orgId)) as { method_key: string; total: number }[];
   const returnsCents = returnsRows.reduce((a, r) => a + r.total, 0);
   const cashReturnsCents = returnsRows
     .filter((r) => cashKeys.has(r.method_key))
     .reduce((a, r) => a + r.total, 0);
 
-  const movements = db
+  const movements = (await db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN kind='in' THEN amount_cents ELSE 0 END),0) ins,
               COALESCE(SUM(CASE WHEN kind='out' THEN amount_cents ELSE 0 END),0) outs
        FROM cash_movements WHERE cash_session_id = ? AND org_id = ?`,
     )
-    .get(sessionId, orgId) as { ins: number; outs: number };
+    .get(sessionId, orgId)) as { ins: number; outs: number };
 
-  const session = db
+  const session = (await db
     .prepare(`SELECT opening_float_cents FROM cash_sessions WHERE id = ? AND org_id = ?`)
-    .get(sessionId, orgId) as { opening_float_cents: number } | undefined;
+    .get(sessionId, orgId)) as { opening_float_cents: number } | undefined;
   if (!session) notFound("Sessão de caixa");
 
   const expectedCashCents =
@@ -186,7 +186,7 @@ export function computeSessionCounters(
   };
 }
 
-export function closeSession(
+export async function closeSession(
   orgId: string,
   sessionId: string,
   data: {
@@ -194,20 +194,20 @@ export function closeSession(
     note?: string;
     actor: { userId: string; label: string };
   },
-): { differenceCents: number; counters: SessionCounters } {
+): Promise<{ differenceCents: number; counters: SessionCounters }> {
   const db = getDb();
-  const session = db
+  const session = (await db
     .prepare(`SELECT * FROM cash_sessions WHERE id = ? AND org_id = ?`)
-    .get(sessionId, orgId) as CashSessionRow | undefined;
+    .get(sessionId, orgId)) as CashSessionRow | undefined;
   if (!session) notFound("Sessão de caixa");
   if (session!.status === "closed") conflict("Sessão já fechada.");
 
-  const counters = computeSessionCounters(orgId, sessionId);
+  const counters = await computeSessionCounters(orgId, sessionId);
   const difference = data.countedCashCents - counters.expectedCashCents;
 
-  tx(db, () => {
+  await tx(db, async () => {
     const now = Date.now();
-    db.prepare(
+    await db.prepare(
       `UPDATE cash_sessions SET status = 'closed', closed_by = ?, closed_at = ?,
          expected_cash_cents = ?, counted_cash_cents = ?, difference_cents = ?,
          closing_note = ?, totals = ?
@@ -217,9 +217,9 @@ export function closeSession(
       difference, data.note ?? null, JSON.stringify(counters), sessionId,
     );
     if (session!.shift_id) {
-      db.prepare(`UPDATE shifts SET ended_at = ? WHERE id = ? AND ended_at IS NULL`).run(now, session!.shift_id);
+      await db.prepare(`UPDATE shifts SET ended_at = ? WHERE id = ? AND ended_at IS NULL`).run(now, session!.shift_id);
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: data.actor.userId, actorLabel: data.actor.label,
         action: "cash.close", resourceType: "cash_session", resourceId: sessionId,
@@ -234,11 +234,11 @@ export function closeSession(
     );
   });
 
-  emitDomainEvent("cash.session_closed", { orgId, sessionId, differenceCents: difference });
+  await emitDomainEvent("cash.session_closed", { orgId, sessionId, differenceCents: difference });
   return { differenceCents: difference, counters };
 }
 
-export function addMovement(
+export async function addMovement(
   orgId: string,
   sessionId: string,
   data: {
@@ -248,20 +248,20 @@ export function addMovement(
     note?: string;
     actor: { userId: string; label: string };
   },
-): string {
+): Promise<string> {
   if (data.amountCents <= 0) badRequest("Valor deve ser positivo.");
   if (!data.reasonCode) badRequest("Motivo é obrigatório.");
   const db = getDb();
-  const session = db.prepare(`SELECT status FROM cash_sessions WHERE id = ? AND org_id = ?`).get(sessionId, orgId) as { status: string } | undefined;
+  const session = (await db.prepare(`SELECT status FROM cash_sessions WHERE id = ? AND org_id = ?`).get(sessionId, orgId)) as { status: string } | undefined;
   if (!session) notFound("Sessão de caixa");
   if (session!.status !== "open") conflict("Sessão de caixa fechada.");
   const id = newId("csm");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO cash_movements (id, org_id, cash_session_id, kind, amount_cents, reason_code, note, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, orgId, sessionId, data.kind, data.amountCents, data.reasonCode, data.note ?? null, data.actor.userId, Date.now());
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: data.actor.userId, actorLabel: data.actor.label,
         action: `cash.movement_${data.kind}`, resourceType: "cash_movement", resourceId: id,
@@ -273,10 +273,10 @@ export function addMovement(
   return id;
 }
 
-export function listSessions(
+export async function listSessions(
   orgId: string,
   opts: { branchId?: string; status?: string; limit?: number; offset?: number } = {},
-): { rows: CashSessionRow[]; total: number } {
+): Promise<{ rows: CashSessionRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["cs.org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -284,7 +284,7 @@ export function listSessions(
   if (opts.status) { where.push("cs.status = ?"); params.push(opts.status); }
   const limit = Math.min(opts.limit ?? 25, 200);
   const offset = opts.offset ?? 0;
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT cs.*, b.name as branch_name, t.name as terminal_name, u.name as opened_by_name
        FROM cash_sessions cs
@@ -294,14 +294,14 @@ export function listSessions(
        WHERE ${where.join(" AND ")}
        ORDER BY cs.opened_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as CashSessionRow[];
-  const total = (db.prepare(`SELECT COUNT(*) c FROM cash_sessions cs WHERE ${where.join(" AND ")}`).get(...params) as { c: number }).c;
+    .all(...params, limit, offset)) as CashSessionRow[];
+  const total = ((await db.prepare(`SELECT COUNT(*) c FROM cash_sessions cs WHERE ${where.join(" AND ")}`).get(...params)) as { c: number }).c;
   return { rows, total };
 }
 
-export function getSession(orgId: string, sessionId: string): { session: CashSessionRow; counters: SessionCounters; movements: unknown[] } {
+export async function getSession(orgId: string, sessionId: string): Promise<{ session: CashSessionRow; counters: SessionCounters; movements: unknown[] }> {
   const db = getDb();
-  const session = db
+  const session = (await db
     .prepare(
       `SELECT cs.*, b.name as branch_name, t.name as terminal_name, u.name as opened_by_name
        FROM cash_sessions cs
@@ -310,10 +310,10 @@ export function getSession(orgId: string, sessionId: string): { session: CashSes
        LEFT JOIN users u ON u.id = cs.opened_by
        WHERE cs.id = ? AND cs.org_id = ?`,
     )
-    .get(sessionId, orgId) as CashSessionRow | undefined;
+    .get(sessionId, orgId)) as CashSessionRow | undefined;
   if (!session) notFound("Sessão de caixa");
-  const counters = computeSessionCounters(orgId, sessionId);
-  const movements = db
+  const counters = await computeSessionCounters(orgId, sessionId);
+  const movements = await db
     .prepare(
       `SELECT m.*, u.name as user_name FROM cash_movements m
        LEFT JOIN users u ON u.id = m.created_by
@@ -323,12 +323,12 @@ export function getSession(orgId: string, sessionId: string): { session: CashSes
   return { session: session!, counters, movements };
 }
 
-export function openSessionForTerminal(
+export async function openSessionForTerminal(
   orgId: string,
   terminalId: string,
-): CashSessionRow | null {
+): Promise<CashSessionRow | null> {
   return (
-    (getDb()
+    ((await getDb()
       .prepare(
         `SELECT cs.*, b.name as branch_name, t.name as terminal_name, u.name as opened_by_name
          FROM cash_sessions cs
@@ -337,14 +337,14 @@ export function openSessionForTerminal(
          LEFT JOIN users u ON u.id = cs.opened_by
          WHERE cs.org_id = ? AND cs.terminal_id = ? AND cs.status = 'open'`,
       )
-      .get(orgId, terminalId) as CashSessionRow | undefined) ?? null
+      .get(orgId, terminalId)) as CashSessionRow | undefined) ?? null
   );
 }
 
-export function listPaymentMethods(orgId: string) {
-  return getDb()
+export async function listPaymentMethods(orgId: string) {
+  return (await getDb()
     .prepare(`SELECT * FROM payment_methods WHERE org_id = ? ORDER BY sort_order`)
-    .all(orgId) as PaymentMethodRow[];
+    .all(orgId)) as PaymentMethodRow[];
 }
 
 export interface PaymentMethodRow {
@@ -360,8 +360,8 @@ export interface PaymentMethodRow {
   config: string;
 }
 
-export function setPaymentMethodEnabled(orgId: string, methodId: string, enabled: boolean): void {
-  getDb()
+export async function setPaymentMethodEnabled(orgId: string, methodId: string, enabled: boolean): Promise<void> {
+  await getDb()
     .prepare(`UPDATE payment_methods SET enabled = ? WHERE id = ? AND org_id = ?`)
     .run(enabled ? 1 : 0, methodId, orgId);
 }

@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const POST = routeHandler(async () => {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
-  if (token) logout(token);
+  if (token) await logout(token);
   cookieStore.delete(SESSION_COOKIE);
   return { loggedOut: true };
 });

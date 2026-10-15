@@ -14,9 +14,9 @@ export const dynamic = "force-dynamic";
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("settings.view");
   return {
-    branches: listBranches(ctx.orgId),
-    warehouses: listWarehouses(ctx.orgId),
-    terminals: listTerminals(ctx.orgId),
+    branches: await listBranches(ctx.orgId),
+    warehouses: await listWarehouses(ctx.orgId),
+    terminals: await listTerminals(ctx.orgId),
   };
 });
 
@@ -45,8 +45,8 @@ export const POST = routeHandler(async (body) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   if (body.action === "create_branch") {
     const { action: _a, ...data } = body;
-    return { branchId: createBranch(ctx.orgId, data, actor) };
+    return { branchId: await createBranch(ctx.orgId, data, actor) };
   }
   const { action: _a, ...data } = body;
-  return { terminalId: createTerminal(ctx.orgId, data, actor) };
+  return { terminalId: await createTerminal(ctx.orgId, data, actor) };
 }, schema);

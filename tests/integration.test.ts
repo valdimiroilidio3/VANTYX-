@@ -20,13 +20,17 @@ import { createUser, setUserPin } from "@/lib/services/user.service";
 import { openSession } from "@/lib/services/cash.service";
 
 const db = getDb();
-const one = <T>(sql: string, ...params: unknown[]): T => db.prepare(sql).get(...params) as T;
-const all = <T>(sql: string, ...params: unknown[]): T[] => db.prepare(sql).all(...params) as T[];
-const count = (sql: string, ...params: unknown[]): number => (one<{ c: number }>(`SELECT COUNT(*) c FROM (${sql})`, ...params)).c;
+const one = async <T>(sql: string, ...params: unknown[]): Promise<T> => (await db.prepare(sql).get(...params)) as T;
+const all = async <T>(sql: string, ...params: unknown[]): Promise<T[]> => (await db.prepare(sql).all(...params)) as T[];
+const count = async (sql: string, ...params: unknown[]): Promise<number> => (await one<{ c: number }>(`SELECT COUNT(*) c FROM (${sql})`, ...params)).c;
 
-function expectApiError(fn: () => unknown, status: number, code?: string): ApiError {
+async function expectApiError(
+  fn: () => unknown | Promise<unknown>,
+  status: number,
+  code?: string,
+): Promise<ApiError> {
   try {
-    fn();
+    await fn();
   } catch (e) {
     expect(e).toBeInstanceOf(ApiError);
     const err = e as ApiError;
@@ -39,7 +43,7 @@ function expectApiError(fn: () => unknown, status: number, code?: string): ApiEr
 
 /* ------------------------- organização & seed ------------------------- */
 
-const orgA = createOrganization({
+const orgA = await createOrganization({
   name: "Teste Supermercado",
   industry: "supermarket",
   country: "PT",
@@ -53,37 +57,37 @@ const ownerActor = { userId: orgA.ownerUserId, label: "Owner Test" };
 const ownerRoleActor = { ...ownerActor, roleKey: "owner" };
 
 describe("organização (supermarket)", () => {
-  it("cria filial, armazém, terminal, owner e módulos do setor", () => {
-    expect(count(`SELECT id FROM branches WHERE id = ?`, orgA.branchId)).toBe(1);
-    expect(count(`SELECT id FROM warehouses WHERE id = ?`, orgA.warehouseId)).toBe(1);
-    expect(count(`SELECT id FROM terminals WHERE id = ?`, orgA.terminalId)).toBe(1);
+  it("cria filial, armazém, terminal, owner e módulos do setor", async () => {
+    expect(await count(`SELECT id FROM branches WHERE id = ?`, orgA.branchId)).toBe(1);
+    expect(await count(`SELECT id FROM warehouses WHERE id = ?`, orgA.warehouseId)).toBe(1);
+    expect(await count(`SELECT id FROM terminals WHERE id = ?`, orgA.terminalId)).toBe(1);
     expect(orgA.enabledModules).toContain("pos");
     expect(orgA.enabledModules).toContain("industry.supermarket");
-    expect(count(`SELECT module_id FROM org_modules WHERE org_id = ? AND enabled = 1`, orgA.orgId)).toBe(orgA.enabledModules.length);
+    expect(await count(`SELECT module_id FROM org_modules WHERE org_id = ? AND enabled = 1`, orgA.orgId)).toBe(orgA.enabledModules.length);
   });
 
-  it("semeia regras do setor e métodos de pagamento por omissão", () => {
-    const rules = all<{ key: string }>(`SELECT key FROM business_rules WHERE org_id = ?`, orgA.orgId);
+  it("semeia regras do setor e métodos de pagamento por omissão", async () => {
+    const rules = await all<{ key: string }>(`SELECT key FROM business_rules WHERE org_id = ?`, orgA.orgId);
     expect(rules.map((r) => r.key).sort()).toEqual(["discount_cap_cashier", "void_requires_manager"]);
-    const methods = all<{ key: string }>(`SELECT key FROM payment_methods WHERE org_id = ?`, orgA.orgId);
+    const methods = await all<{ key: string }>(`SELECT key FROM payment_methods WHERE org_id = ?`, orgA.orgId);
     expect(methods.map((m) => m.key)).toEqual(expect.arrayContaining(["cash", "card", "mbway"]));
   });
 
-  it("completeOnboarding marca o perfil como onboarded (não demo)", () => {
-    completeOnboarding(orgA.orgId, ownerActor);
-    const p = one<{ onboarded_at: number | null; industry: string }>(
+  it("completeOnboarding marca o perfil como onboarded (não demo)", async () => {
+    await completeOnboarding(orgA.orgId, ownerActor);
+    const p = await one<{ onboarded_at: number | null; industry: string }>(
       `SELECT onboarded_at, industry FROM org_profiles WHERE org_id = ?`, orgA.orgId,
     );
     expect(p.onboarded_at).not.toBeNull();
     expect(p.industry).toBe("supermarket");
-    expect(one<{ demo: number }>(`SELECT demo FROM organizations WHERE id = ?`, orgA.orgId).demo).toBe(0);
+    expect((await one<{ demo: number }>(`SELECT demo FROM organizations WHERE id = ?`, orgA.orgId)).demo).toBe(0);
   });
 });
 
 /* ------------------------------ catálogo ------------------------------ */
 
-const catFrescos = createCategory(orgA.orgId, { name: "Frescos" });
-const prodA = createProduct(orgA.orgId, {
+const catFrescos = await createCategory(orgA.orgId, { name: "Frescos" });
+const prodA = await createProduct(orgA.orgId, {
   name: "Maçã Teste",
   sku: "TST-0001",
   basePriceCents: 1000,
@@ -97,38 +101,38 @@ const prodA = createProduct(orgA.orgId, {
 }, ownerActor);
 
 describe("catálogo", () => {
-  it("cria produto com EAN-13 válido e categoria", () => {
-    const p = one<{ name: string; base_price_cents: number; tax_rate_bps: number }>(
+  it("cria produto com EAN-13 válido e categoria", async () => {
+    const p = await one<{ name: string; base_price_cents: number; tax_rate_bps: number }>(
       `SELECT name, base_price_cents, tax_rate_bps FROM products WHERE id = ?`, prodA,
     );
     expect(p.base_price_cents).toBe(1000);
     expect(p.tax_rate_bps).toBe(600);
-    expect(count(`SELECT code FROM barcodes WHERE code = ? AND product_id = ?`, "5600123000014", prodA)).toBe(1);
+    expect(await count(`SELECT code FROM barcodes WHERE code = ? AND product_id = ?`, "5600123000014", prodA)).toBe(1);
   });
 
-  it("rejeita SKU duplicado e código de barras duplicado (409)", () => {
-    expectApiError(() => createProduct(orgA.orgId, {
+  it("rejeita SKU duplicado e código de barras duplicado (409)", async () => {
+    await expectApiError(async () => await createProduct(orgA.orgId, {
       name: "Cópia", sku: "TST-0001", basePriceCents: 100, taxRateBps: 2300, unit: "un",
     }, ownerActor), 409);
-    expectApiError(() => createProduct(orgA.orgId, {
+    await expectApiError(async () => await createProduct(orgA.orgId, {
       name: "Outro", sku: "TST-0002", basePriceCents: 100, taxRateBps: 2300, unit: "un",
       barcodes: [{ code: "5600123000014" }],
     }, ownerActor), 409);
   });
 
-  it("searchForPos encontra produto por código de barras exato, SKU e nome (regressão)", () => {
-    const byCode = searchForPos(orgA.orgId, "5600123000014", { limit: 5 });
+  it("searchForPos encontra produto por código de barras exato, SKU e nome (regressão)", async () => {
+    const byCode = await searchForPos(orgA.orgId, "5600123000014", { limit: 5 });
     expect(byCode).toHaveLength(1);
     expect(byCode[0]!.productId).toBe(prodA);
     expect(byCode[0]!.priceCents).toBe(1000);
-    const bySku = searchForPos(orgA.orgId, "TST-0001", { limit: 5 });
+    const bySku = await searchForPos(orgA.orgId, "TST-0001", { limit: 5 });
     expect(bySku.some((r) => r.productId === prodA)).toBe(true);
-    const byName = searchForPos(orgA.orgId, "Maçã", { limit: 5 });
+    const byName = await searchForPos(orgA.orgId, "Maçã", { limit: 5 });
     expect(byName.some((r) => r.productId === prodA)).toBe(true);
   });
 
-  it("rejeita EAN-13 com dígito de controlo inválido", () => {
-    expectApiError(() => createProduct(orgA.orgId, {
+  it("rejeita EAN-13 com dígito de controlo inválido", async () => {
+    await expectApiError(async () => await createProduct(orgA.orgId, {
       name: "Ean Mau", sku: "TST-0003", basePriceCents: 100, taxRateBps: 2300, unit: "un",
       barcodes: [{ code: "5600123000015" }], // checksum errado
     }, ownerActor), 400);
@@ -138,21 +142,21 @@ describe("catálogo", () => {
 /* -------------------------------- stock -------------------------------- */
 
 describe("stock", () => {
-  it("carga inicial absoluta regista nível e movimento", () => {
-    const r = adjustStock({
+  it("carga inicial absoluta regista nível e movimento", async () => {
+    const r = await adjustStock({
       orgId: orgA.orgId, warehouseId: orgA.warehouseId, productId: prodA,
       mode: "absolute", qtyMilli: 10_000, reasonCode: "initial_load", actor: ownerActor,
     });
     expect(r.newQtyMilli).toBe(10_000);
-    expect(count(`SELECT id FROM stock_movements WHERE product_id = ? AND reason_code = 'adjustment' AND note LIKE 'initial_load%'`, prodA)).toBe(1);
+    expect(await count(`SELECT id FROM stock_movements WHERE product_id = ? AND reason_code = 'adjustment' AND note LIKE 'initial_load%'`, prodA)).toBe(1);
   });
 
-  it("ajuste delta exige nota justificativa (400 sem nota)", () => {
-    expectApiError(() => adjustStock({
+  it("ajuste delta exige nota justificativa (400 sem nota)", async () => {
+    await expectApiError(async () => await adjustStock({
       orgId: orgA.orgId, warehouseId: orgA.warehouseId, productId: prodA,
       mode: "delta", qtyMilli: -500, reasonCode: "waste", actor: ownerActor,
     }), 400);
-    const r = adjustStock({
+    const r = await adjustStock({
       orgId: orgA.orgId, warehouseId: orgA.warehouseId, productId: prodA,
       mode: "delta", qtyMilli: -500, reasonCode: "waste", note: "Deteriorado", actor: ownerActor,
     });
@@ -162,19 +166,19 @@ describe("stock", () => {
 
 /* ------------------------------- checkout ------------------------------- */
 
-const actorCashierId = createUser(orgA.orgId, {
+const actorCashierId = await createUser(orgA.orgId, {
   name: "Caixa Teste", email: "caixa@test.local", password: "Str0ng!Pass", roleKey: "cashier",
 }, ownerActor);
 const cashierActor = { userId: actorCashierId, label: "Caixa Teste", roleKey: "cashier" };
 
-function stockOf(productId: string): number {
-  return one<{ q: number }>(
+async function stockOf(productId: string): Promise<number> {
+  return (await one<{ q: number }>(
     `SELECT COALESCE(SUM(qty_milli),0) q FROM stock_levels WHERE product_id = ?`, productId,
-  ).q;
+  )).q;
 }
 
 // Vendas em dinheiro exigem sessão de caixa aberta no terminal (regra real).
-const cashSession = openSession(orgA.orgId, {
+const cashSession = await openSession(orgA.orgId, {
   branchId: orgA.branchId,
   terminalId: orgA.terminalId,
   openingFloatCents: 20_000,
@@ -185,9 +189,9 @@ expect(cashSession.sessionId).toBeTruthy();
 
 let sale1Id = "";
 describe("checkout (POS)", () => {
-  it("venda a dinheiro: documento FT, hash, troco e decremento de stock", () => {
-    const before = stockOf(prodA);
-    const res = checkout({
+  it("venda a dinheiro: documento FT, hash, troco e decremento de stock", async () => {
+    const before = await stockOf(prodA);
+    const res = await checkout({
       branchId: orgA.branchId,
       terminalId: orgA.terminalId,
       channel: "in_store",
@@ -201,19 +205,19 @@ describe("checkout (POS)", () => {
     expect(res.changeCents).toBe(3000);
     expect(res.status).toBe("completed");
     expect(res.documentNumber).toMatch(/^FT /);
-    expect(stockOf(prodA)).toBe(before - 2000);
-    const sale = one<{ hash: string; prev_hash: string | null; document_number: string }>(
+    expect(await stockOf(prodA)).toBe(before - 2000);
+    const sale = await one<{ hash: string; prev_hash: string | null; document_number: string }>(
       `SELECT hash, prev_hash, document_number FROM sales WHERE id = ?`, res.saleId,
     );
     expect(sale.hash).toMatch(/^[A-Za-z0-9+/]{27}=$/); // Base-64 do SHA-1 (AT)
     expect(sale.prev_hash).toBeNull(); // primeira venda → génese
-    expect(count(`SELECT id FROM sale_payments WHERE sale_id = ? AND method_key = 'cash'`, res.saleId)).toBe(1);
+    expect(await count(`SELECT id FROM sale_payments WHERE sale_id = ? AND method_key = 'cash'`, res.saleId)).toBe(1);
   });
 
-  it("idempotência: repetir a mesma chave NÃO duplica venda nem stock", () => {
-    const before = stockOf(prodA);
-    const salesBefore = count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId);
-    const res = checkout({
+  it("idempotência: repetir a mesma chave NÃO duplica venda nem stock", async () => {
+    const before = await stockOf(prodA);
+    const salesBefore = await count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId);
+    const res = await checkout({
       branchId: orgA.branchId,
       terminalId: orgA.terminalId,
       channel: "in_store",
@@ -224,19 +228,19 @@ describe("checkout (POS)", () => {
     });
     expect(res.replayed).toBe(true);
     expect(res.saleId).toBe(sale1Id);
-    expect(stockOf(prodA)).toBe(before);
-    expect(count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId)).toBe(salesBefore);
+    expect(await stockOf(prodA)).toBe(before);
+    expect(await count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId)).toBe(salesBefore);
   });
 
-  it("client_ref deduplica reposições offline (sem chave de idempotência)", () => {
-    const before = stockOf(prodA);
-    const first = checkout({
+  it("client_ref deduplica reposições offline (sem chave de idempotência)", async () => {
+    const before = await stockOf(prodA);
+    const first = await checkout({
       branchId: orgA.branchId, channel: "in_store", clientRef: "offline-abc",
       lines: [{ productId: prodA, qtyMilli: 1000 }],
       payments: [{ methodKey: "card", amountCents: 1000, status: "confirmed" }],
       actor: ownerRoleActor,
     });
-    const second = checkout({
+    const second = await checkout({
       branchId: orgA.branchId, channel: "in_store", clientRef: "offline-abc", // replay
       lines: [{ productId: prodA, qtyMilli: 1000 }],
       payments: [{ methodKey: "card", amountCents: 1000, status: "confirmed" }],
@@ -244,32 +248,32 @@ describe("checkout (POS)", () => {
     });
     expect(second.saleId).toBe(first.saleId);
     expect(second.replayed).toBe(true);
-    expect(stockOf(prodA)).toBe(before - 1000); // decremento único
+    expect(await stockOf(prodA)).toBe(before - 1000); // decremento único
   });
 
-  it("pagamento insuficiente é rejeitado (409) e não cria venda", () => {
-    const salesBefore = count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId);
-    expectApiError(() => checkout({
+  it("pagamento insuficiente é rejeitado (409) e não cria venda", async () => {
+    const salesBefore = await count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId);
+    await expectApiError(async () => await checkout({
       branchId: orgA.branchId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 1000 }],
       payments: [{ methodKey: "card", amountCents: 500, status: "confirmed" }], // devido 1000
       actor: ownerRoleActor,
     }), 409);
-    expect(count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId)).toBe(salesBefore);
+    expect(await count(`SELECT id FROM sales WHERE org_id = ?`, orgA.orgId)).toBe(salesBefore);
   });
 
-  it("encadeia o hash: segunda venda referencia o hash da anterior", () => {
-    const res = checkout({
+  it("encadeia o hash: segunda venda referencia o hash da anterior", async () => {
+    const res = await checkout({
       branchId: orgA.branchId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 1000 }],
       payments: [{ methodKey: "mbway", amountCents: 1000, status: "confirmed" }],
       actor: ownerRoleActor,
     });
-    const prevDoc = one<{ hash: string }>(
+    const prevDoc = await one<{ hash: string }>(
       `SELECT hash FROM sales WHERE org_id = ? AND id != ? AND hash IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       orgA.orgId, res.saleId,
     );
-    const cur = one<{ prev_hash: string | null }>(`SELECT prev_hash FROM sales WHERE id = ?`, res.saleId);
+    const cur = await one<{ prev_hash: string | null }>(`SELECT prev_hash FROM sales WHERE id = ?`, res.saleId);
     expect(cur.prev_hash).toBe(prevDoc.hash);
   });
 });
@@ -277,8 +281,8 @@ describe("checkout (POS)", () => {
 /* --------------------- regras de negócio no checkout -------------------- */
 
 describe("regras no checkout (desconto > 10% exige aprovação)", () => {
-  it("desconto de linha 20% → 428 approval_required com approvalId", () => {
-    const err = expectApiError(() => checkout({
+  it("desconto de linha 20% → 428 approval_required com approvalId", async () => {
+    const err = await expectApiError(async () => await checkout({
       branchId: orgA.branchId, terminalId: orgA.terminalId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 1000, discountCents: 200, discountReason: "cliente insatisfeito" }],
       payments: [{ methodKey: "cash", amountCents: 800, tenderedCents: 800 }],
@@ -286,14 +290,14 @@ describe("regras no checkout (desconto > 10% exige aprovação)", () => {
     }), 428, "approval_required");
     const details = err.details as { approvalId?: string };
     expect(details.approvalId).toBeTruthy();
-    expect(count(`SELECT id FROM approvals WHERE org_id = ? AND status = 'pending'`, orgA.orgId)).toBeGreaterThanOrEqual(1);
-    expect(count(`SELECT id FROM rule_executions WHERE org_id = ? AND result = 'approval_required'`, orgA.orgId)).toBeGreaterThanOrEqual(1);
+    expect(await count(`SELECT id FROM approvals WHERE org_id = ? AND status = 'pending'`, orgA.orgId)).toBeGreaterThanOrEqual(1);
+    expect(await count(`SELECT id FROM rule_executions WHERE org_id = ? AND result = 'approval_required'`, orgA.orgId)).toBeGreaterThanOrEqual(1);
   });
 
-  it("PIN de supervisor válido ultrapassa a aprovação e regista a venda", () => {
-    setUserPin(orgA.orgId, orgA.ownerUserId, "1234", ownerActor);
-    const before = stockOf(prodA);
-    const res = checkout({
+  it("PIN de supervisor válido ultrapassa a aprovação e regista a venda", async () => {
+    await setUserPin(orgA.orgId, orgA.ownerUserId, "1234", ownerActor);
+    const before = await stockOf(prodA);
+    const res = await checkout({
       branchId: orgA.branchId, terminalId: orgA.terminalId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 1000, discountCents: 200, discountReason: "aprovado" }],
       payments: [{ methodKey: "cash", amountCents: 800, tenderedCents: 1000 }],
@@ -303,11 +307,11 @@ describe("regras no checkout (desconto > 10% exige aprovação)", () => {
     expect(res.status).toBe("completed");
     expect(res.totalCents).toBe(800);
     expect(res.changeCents).toBe(200);
-    expect(stockOf(prodA)).toBe(before - 1000);
+    expect(await stockOf(prodA)).toBe(before - 1000);
   });
 
-  it("PIN de supervisor inválido é rejeitado (409)", () => {
-    expectApiError(() => checkout({
+  it("PIN de supervisor inválido é rejeitado (409)", async () => {
+    await expectApiError(async () => await checkout({
       branchId: orgA.branchId, terminalId: orgA.terminalId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 1000, discountCents: 200 }],
       payments: [{ methodKey: "cash", amountCents: 800, tenderedCents: 800 }],
@@ -320,18 +324,18 @@ describe("regras no checkout (desconto > 10% exige aprovação)", () => {
 /* ------------------------- devoluções e anulação ------------------------ */
 
 describe("devoluções (nota de crédito) e anulação", () => {
-  it("devolução parcial: NC proporcional, stock reposto, linha marcada", () => {
-    const sale = checkout({
+  it("devolução parcial: NC proporcional, stock reposto, linha marcada", async () => {
+    const sale = await checkout({
       branchId: orgA.branchId, terminalId: orgA.terminalId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 3000 }],
       payments: [{ methodKey: "cash", amountCents: 3000, tenderedCents: 3000 }],
       actor: ownerRoleActor,
     });
-    const detail = getSaleDetail(orgA.orgId, sale.saleId) as { lines: { id: string; total_cents: number }[] };
+    const detail = await getSaleDetail(orgA.orgId, sale.saleId) as { lines: { id: string; total_cents: number }[] };
     const line = detail.lines[0]!;
     // refund exato = round(total * qtyDev / qty) = round(3000 * 1000/3000) = 1000
-    const before = stockOf(prodA);
-    const ret = createReturn({
+    const before = await stockOf(prodA);
+    const ret = await createReturn({
       orgId: orgA.orgId, saleId: sale.saleId,
       lines: [{ saleLineId: line.id, qtyMilli: 1000, restock: true }],
       reasonCode: "defective", note: "Embalo danificado", restock: true,
@@ -341,20 +345,20 @@ describe("devoluções (nota de crédito) e anulação", () => {
     });
     expect(ret.documentNumber).toMatch(/^NC /);
     expect(ret.totalCents).toBe(1000);
-    expect(stockOf(prodA)).toBe(before + 1000);
-    const l = one<{ returned_milli: number }>(`SELECT returned_milli FROM sale_lines WHERE id = ?`, line.id);
+    expect(await stockOf(prodA)).toBe(before + 1000);
+    const l = await one<{ returned_milli: number }>(`SELECT returned_milli FROM sale_lines WHERE id = ?`, line.id);
     expect(l.returned_milli).toBe(1000);
   });
 
-  it("reembolso que não coincide com o total proporcional do servidor é rejeitado", () => {
-    const sale = checkout({
+  it("reembolso que não coincide com o total proporcional do servidor é rejeitado", async () => {
+    const sale = await checkout({
       branchId: orgA.branchId, channel: "in_store",
       lines: [{ productId: prodA, qtyMilli: 2000 }],
       payments: [{ methodKey: "card", amountCents: 2000, status: "confirmed" }],
       actor: ownerRoleActor,
     });
-    const detail = getSaleDetail(orgA.orgId, sale.saleId) as { lines: { id: string }[] };
-    expectApiError(() => createReturn({
+    const detail = await getSaleDetail(orgA.orgId, sale.saleId) as { lines: { id: string }[] };
+    await expectApiError(async () => await createReturn({
       orgId: orgA.orgId, saleId: sale.saleId,
       lines: [{ saleLineId: detail.lines[0]!.id, qtyMilli: 1000 }],
       reasonCode: "customer_regret", restock: false,
@@ -363,25 +367,25 @@ describe("devoluções (nota de crédito) e anulação", () => {
     }), 400);
   });
 
-  it("anulação sem motivo é rejeitada; com motivo gera NC e repõe stock", () => {
-    expectApiError(() => voidSale(orgA.orgId, sale1Id, "  ", ownerActor), 400);
-    const before = stockOf(prodA);
-    const remaining = one<{ q: number }>(
+  it("anulação sem motivo é rejeitada; com motivo gera NC e repõe stock", async () => {
+    await expectApiError(async () => await voidSale(orgA.orgId, sale1Id, "  ", ownerActor), 400);
+    const before = await stockOf(prodA);
+    const remaining = (await one<{ q: number }>(
       `SELECT qty_milli - returned_milli q FROM sale_lines WHERE sale_id = ?`, sale1Id,
-    ).q;
-    const res = voidSale(orgA.orgId, sale1Id, "Erro de operador", ownerActor);
+    )).q;
+    const res = await voidSale(orgA.orgId, sale1Id, "Erro de operador", ownerActor);
     expect(res.documentNumber).toMatch(/^NC /);
-    expect(one<{ status: string }>(`SELECT status FROM sales WHERE id = ?`, sale1Id).status).toBe("void");
-    expect(stockOf(prodA)).toBe(before + remaining);
+    expect((await one<{ status: string }>(`SELECT status FROM sales WHERE id = ?`, sale1Id)).status).toBe("void");
+    expect(await stockOf(prodA)).toBe(before + remaining);
   });
 });
 
 /* ------------------------------ compras ------------------------------ */
 
 describe("compras (fornecedor → encomenda → receção)", () => {
-  it("receção aumenta stock, atualiza custo médio e emite GRN", () => {
-    const sup = createSupplier(orgA.orgId, { name: "Fornecedor Teste" });
-    const po = createPurchaseOrder(orgA.orgId, {
+  it("receção aumenta stock, atualiza custo médio e emite GRN", async () => {
+    const sup = await createSupplier(orgA.orgId, { name: "Fornecedor Teste" });
+    const po = await createPurchaseOrder(orgA.orgId, {
       supplierId: sup,
       warehouseId: orgA.warehouseId,
       lines: [{ productId: prodA, qtyMilli: 5000, unitCostCents: 500, taxRateBps: 600 }],
@@ -389,46 +393,46 @@ describe("compras (fornecedor → encomenda → receção)", () => {
     });
     expect(po.status).toBe("draft");
     expect(po.poNumber).toMatch(/^PC-/);
-    const before = stockOf(prodA);
-    const poDetail = getPurchaseOrder(orgA.orgId, po.poId) as { lines: { id: string }[] };
-    const receipt = receivePurchaseOrder(orgA.orgId, po.poId, [
+    const before = await stockOf(prodA);
+    const poDetail = await getPurchaseOrder(orgA.orgId, po.poId) as { lines: { id: string }[] };
+    const receipt = await receivePurchaseOrder(orgA.orgId, po.poId, [
       { poLineId: poDetail.lines[0]!.id, qtyMilli: 5000 },
     ], { note: "Receção completa", actor: ownerActor });
     expect(receipt.discrepancies).toBe(0);
-    expect(stockOf(prodA)).toBe(before + 5000);
-    expect(count(`SELECT id FROM goods_receipts WHERE id = ?`, receipt.receiptId)).toBe(1);
-    const after = getPurchaseOrder(orgA.orgId, po.poId) as unknown as { po: { status: string } };
+    expect(await stockOf(prodA)).toBe(before + 5000);
+    expect(await count(`SELECT id FROM goods_receipts WHERE id = ?`, receipt.receiptId)).toBe(1);
+    const after = await getPurchaseOrder(orgA.orgId, po.poId) as unknown as { po: { status: string } };
     expect(after.po.status).toBe("received");
-    const cost = one<{ cost_cents: number }>(`SELECT cost_cents FROM products WHERE id = ?`, prodA);
+    const cost = await one<{ cost_cents: number }>(`SELECT cost_cents FROM products WHERE id = ?`, prodA);
     expect(cost.cost_cents).toBeGreaterThan(0); // custo médio ponderado atualizado
   });
 
-  it("receção acima do encomendado é rejeitada; parcial com custo diferente regista discrepância", () => {
-    const sup = createSupplier(orgA.orgId, { name: "Fornecedor Teste 2" });
-    const po = createPurchaseOrder(orgA.orgId, {
+  it("receção acima do encomendado é rejeitada; parcial com custo diferente regista discrepância", async () => {
+    const sup = await createSupplier(orgA.orgId, { name: "Fornecedor Teste 2" });
+    const po = await createPurchaseOrder(orgA.orgId, {
       supplierId: sup,
       warehouseId: orgA.warehouseId,
       lines: [{ productId: prodA, qtyMilli: 1000, unitCostCents: 500 }],
       actor: ownerRoleActor,
     });
-    const poDetail = getPurchaseOrder(orgA.orgId, po.poId) as { lines: { id: string }[] };
-    expectApiError(() => receivePurchaseOrder(orgA.orgId, po.poId, [
+    const poDetail = await getPurchaseOrder(orgA.orgId, po.poId) as { lines: { id: string }[] };
+    await expectApiError(async () => await receivePurchaseOrder(orgA.orgId, po.poId, [
       { poLineId: poDetail.lines[0]!.id, qtyMilli: 1200 }, // +200 que o encomendado
     ], { actor: ownerActor }), 400);
     // receção parcial com custo diferente do encomendado → 1 discrepância
-    const receipt = receivePurchaseOrder(orgA.orgId, po.poId, [
+    const receipt = await receivePurchaseOrder(orgA.orgId, po.poId, [
       { poLineId: poDetail.lines[0]!.id, qtyMilli: 800, unitCostCents: 550 },
     ], { actor: ownerActor });
     expect(receipt.discrepancies).toBe(1);
-    const after = getPurchaseOrder(orgA.orgId, po.poId) as unknown as { po: { status: string } };
+    const after = await getPurchaseOrder(orgA.orgId, po.poId) as unknown as { po: { status: string } };
     expect(after.po.status).toBe("partially_received");
   });
 });
 
 /* --------------------------- multi-tenant --------------------------- */
 
-describe("isolamento multi-tenant", () => {
-  const orgB = createOrganization({
+describe("isolamento multi-tenant", async () => {
+  const orgB = await createOrganization({
     name: "Teste Restaurante",
     industry: "restaurant",
     country: "PT",
@@ -438,14 +442,14 @@ describe("isolamento multi-tenant", () => {
     ownerPassword: "Str0ng!Pass",
   });
 
-  it("organização B não vê produtos, vendas nem documentos de A", () => {
-    expect(listProducts(orgB.orgId, {}).total).toBe(0);
-    expect(listSales(orgB.orgId, {}).total).toBe(0);
-    expect(count(`SELECT id FROM sales WHERE org_id = ?`, orgB.orgId)).toBe(0);
+  it("organização B não vê produtos, vendas nem documentos de A", async () => {
+    expect((await listProducts(orgB.orgId, {})).total).toBe(0);
+    expect((await listSales(orgB.orgId, {})).total).toBe(0);
+    expect(await count(`SELECT id FROM sales WHERE org_id = ?`, orgB.orgId)).toBe(0);
   });
 
-  it("aceder a venda de A com o orgId de B → 404", () => {
-    expectApiError(() => getSaleDetail(orgB.orgId, sale1Id), 404);
+  it("aceder a venda de A com o orgId de B → 404", async () => {
+    await expectApiError(async () => await getSaleDetail(orgB.orgId, sale1Id), 404);
   });
 
   it("setor B ativa módulos de hospitalidade (não os de supermercado)", () => {

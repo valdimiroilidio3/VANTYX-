@@ -35,7 +35,7 @@ export const PATCH = routeHandler(async (body) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   const { settings, ...identity } = body;
   if (identity.name || identity.legalName || identity.taxId) {
-    updateOrgIdentity(
+    await updateOrgIdentity(
       ctx.orgId,
       { name: identity.name, legalName: identity.legalName, taxId: identity.taxId },
       actor,
@@ -43,10 +43,10 @@ export const PATCH = routeHandler(async (body) => {
   }
   const localeKeys = ["country", "currency", "locale", "timezone", "subIndustry", "taxRegime", "pricesIncludeTax", "defaultTaxBps"] as const;
   if (localeKeys.some((k) => body[k] !== undefined)) {
-    updateProfileLocale(ctx.orgId, body, actor);
+    await updateProfileLocale(ctx.orgId, body, actor);
   }
   if (settings) {
-    mergeProfileSettings(ctx.orgId, settings, actor);
+    await mergeProfileSettings(ctx.orgId, settings, actor);
   }
   return getOrgProfile(ctx.orgId);
 }, patchSchema);

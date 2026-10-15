@@ -21,10 +21,10 @@ export const POST = routeHandler(async (body) => {
   if (!body.confirmation) {
     return {
       mode: "preview" as const,
-      preview: previewIndustryChange(ctx.orgId, body.industry),
+      preview: await previewIndustryChange(ctx.orgId, body.industry),
     };
   }
-  const preview = applyIndustryChange(ctx.orgId, body.industry, body.confirmation, {
+  const preview = await applyIndustryChange(ctx.orgId, body.industry, body.confirmation, {
     userId: ctx.userId,
     label: ctx.userName,
   });

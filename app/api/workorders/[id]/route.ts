@@ -19,6 +19,6 @@ const schema = z.object({
 export const POST = routeHandler(async (body, _request, context) => {
   const ctx = await requirePermission("workorders.manage");
   const { id } = await context.params;
-  updateWorkOrderStatus(ctx.orgId, id, body.status, { userId: ctx.userId, label: ctx.userName });
+  await updateWorkOrderStatus(ctx.orgId, id, body.status, { userId: ctx.userId, label: ctx.userName });
   return getWorkOrder(ctx.orgId, id);
 }, schema);

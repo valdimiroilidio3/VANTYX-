@@ -26,7 +26,7 @@ const openSchema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("cash.open");
-  const result = openSession(ctx.orgId, {
+  const result = await openSession(ctx.orgId, {
     ...body,
     actor: { userId: ctx.userId, label: ctx.userName },
   });

@@ -7,8 +7,8 @@ import type { Migration } from "../migrate";
 export const migration002Commerce: Migration = {
   id: "002_commerce",
   name: "Catalog, inventory, CRM, purchasing, sales, cash",
-  up(db) {
-    db.exec(`
+  async up(db) {
+    await db.exec(`
 CREATE TABLE categories (
   id          TEXT PRIMARY KEY,
   org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

@@ -10,7 +10,7 @@ export const GET = routeHandler(async (_body, request) => {
   const url = new URL(request.url);
   const branchId = url.searchParams.get("branchId");
   if (!branchId) return { tables: [] };
-  return { tables: listTables(ctx.orgId, branchId) };
+  return { tables: await listTables(ctx.orgId, branchId) };
 });
 
 const schema = z.object({
@@ -25,6 +25,6 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("restaurant.floor");
-  const tableId = upsertTable(ctx.orgId, body.branchId, body);
-  return { tableId, tables: listTables(ctx.orgId, body.branchId) };
+  const tableId = await upsertTable(ctx.orgId, body.branchId, body);
+  return { tableId, tables: await listTables(ctx.orgId, body.branchId) };
 }, schema);

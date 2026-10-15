@@ -11,7 +11,7 @@ dashboards, modelo de dados e permissões ao perfil de cada negócio.
 
 - **Next.js 15** (App Router) + **TypeScript strict** (`noUncheckedIndexedAccess`)
 - **Tailwind CSS v4** (tema claro/escuro, tokens próprios)
-- **better-sqlite3** (SQLite em WAL) com migrações versionadas em SQL-in-TS
+- **libSQL/Turso** (`@libsql/client`) — SQLite local em desenvolvimento (`data/vantyx.db`) ou base remota Turso em produção (Vercel/serverless); migrações versionadas em SQL-in-TS
 - **Vitest** (testes de domínio + integração sobre BD real em memória)
 - Dinheiro em **cêntimos inteiros**, quantidades em **mili-unidades inteiras**,
   taxas em **basis points**, tempo em **unix ms**, `org_id` em todas as tabelas

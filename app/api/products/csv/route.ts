@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 /** GET = export CSV (products.export → reports.export fallback handled by permission). */
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("products.view");
-  const csv = exportProductsCsv(ctx.orgId);
+  const csv = await exportProductsCsv(ctx.orgId);
   return new NextResponse(csv, {
     headers: {
       "content-type": "text/csv; charset=utf-8",

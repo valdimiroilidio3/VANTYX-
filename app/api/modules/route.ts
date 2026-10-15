@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("settings.view");
-  return listOrgModules(ctx.orgId).map((m) => ({
+  return (await listOrgModules(ctx.orgId)).map((m) => ({
     id: m.module.id,
     name: m.module.name,
     description: m.module.description,
@@ -43,7 +43,7 @@ export const POST = routeHandler(async (body) => {
     case "preview_disable":
       return previewDisable(ctx.orgId, body.moduleId);
     case "disable":
-      disableModule(ctx.orgId, body.moduleId, actor, {
+      await disableModule(ctx.orgId, body.moduleId, actor, {
         confirmDataLoss: body.confirmDataLoss,
       });
       return { disabled: body.moduleId };

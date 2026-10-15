@@ -19,8 +19,8 @@ import type { Migration } from "../migrate";
 export const migration001Core: Migration = {
   id: "001_core",
   name: "Platform core: orgs, identity, modules, governance",
-  up(db) {
-    db.exec(`
+  async up(db) {
+    await db.exec(`
 CREATE TABLE organizations (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,

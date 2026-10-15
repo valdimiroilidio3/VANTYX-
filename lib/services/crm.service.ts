@@ -25,20 +25,20 @@ export interface CustomerInput {
   creditLimitCents?: number;
 }
 
-export function createCustomer(
+export async function createCustomer(
   orgId: string,
   input: CustomerInput,
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   if (!input.name?.trim()) badRequest("Nome do cliente é obrigatório.");
   const db = getDb();
   if (input.email) {
-    const dup = db.prepare(`SELECT id FROM customers WHERE org_id = ? AND lower(email) = lower(?)`).get(orgId, input.email.trim());
+    const dup = await db.prepare(`SELECT id FROM customers WHERE org_id = ? AND lower(email) = lower(?)`).get(orgId, input.email.trim());
     if (dup) throw new ApiError(409, "Já existe um cliente com este email.", "duplicate_customer");
   }
   const id = newId("cust");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO customers
         (id, org_id, name, email, phone, tax_id, address, city, notes, tags,
          marketing_consent, customer_type, price_list_id, credit_limit_cents, created_at, updated_at)
@@ -50,7 +50,7 @@ export function createCustomer(
       input.customerType ?? "individual", input.priceListId ?? null,
       input.creditLimitCents ?? 0, Date.now(), Date.now(),
     );
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "customer.create", resourceType: "customer", resourceId: id, after: input },
       db,
     );
@@ -58,17 +58,17 @@ export function createCustomer(
   return id;
 }
 
-export function updateCustomer(
+export async function updateCustomer(
   orgId: string,
   customerId: string,
   patch: Partial<CustomerInput> & { status?: "active" | "blocked" | "archived" },
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const before = db.prepare(`SELECT * FROM customers WHERE id = ? AND org_id = ?`).get(customerId, orgId);
+  const before = await db.prepare(`SELECT * FROM customers WHERE id = ? AND org_id = ?`).get(customerId, orgId);
   if (!before) notFound("Cliente");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `UPDATE customers SET
         name = COALESCE(?, name), email = COALESCE(?, email), phone = COALESCE(?, phone),
         tax_id = COALESCE(?, tax_id), address = COALESCE(?, address), city = COALESCE(?, city),
@@ -86,17 +86,17 @@ export function updateCustomer(
       patch.customerType ?? null, patch.priceListId ?? null, patch.creditLimitCents ?? null,
       patch.status ?? null, Date.now(), customerId, orgId,
     );
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "customer.update", resourceType: "customer", resourceId: customerId, before, after: patch },
       db,
     );
   });
 }
 
-export function listCustomers(
+export async function listCustomers(
   orgId: string,
   opts: { search?: string; tag?: string; status?: string; limit?: number; offset?: number } = {},
-): { rows: CustomerRow[]; total: number } {
+): Promise<{ rows: CustomerRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -110,7 +110,7 @@ export function listCustomers(
   const limit = Math.min(opts.limit ?? 25, 200);
   const offset = opts.offset ?? 0;
   const whereSql = where.join(" AND ");
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT c.*,
         (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.status != 'void') as sales_count,
@@ -120,9 +120,9 @@ export function listCustomers(
        WHERE ${whereSql}
        ORDER BY c.name LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as CustomerRow[];
+    .all(...params, limit, offset)) as CustomerRow[];
   const total = (
-    db.prepare(`SELECT COUNT(*) n FROM customers WHERE ${whereSql}`).get(...params) as { n: number }
+    (await db.prepare(`SELECT COUNT(*) n FROM customers WHERE ${whereSql}`).get(...params)) as { n: number }
   ).n;
   return { rows, total };
 }
@@ -151,21 +151,21 @@ export interface CustomerRow {
   updated_at: number;
 }
 
-export function getCustomerDetail(orgId: string, customerId: string) {
+export async function getCustomerDetail(orgId: string, customerId: string) {
   const db = getDb();
-  const customer = db.prepare(`SELECT * FROM customers WHERE id = ? AND org_id = ?`).get(customerId, orgId) as CustomerRow | undefined;
+  const customer = (await db.prepare(`SELECT * FROM customers WHERE id = ? AND org_id = ?`).get(customerId, orgId)) as CustomerRow | undefined;
   if (!customer) notFound("Cliente");
-  const sales = db
+  const sales = await db
     .prepare(
       `SELECT id, document_number, total_cents, status, channel, created_at
        FROM sales WHERE org_id = ? AND customer_id = ? ORDER BY created_at DESC LIMIT 50`,
     )
     .all(orgId, customerId);
-  const loyalty = db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, customerId) ?? null;
+  const loyalty = await db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, customerId) ?? null;
   const loyaltyTx = loyalty
-    ? db.prepare(`SELECT * FROM loyalty_transactions WHERE account_id = ? ORDER BY created_at DESC LIMIT 50`).all((loyalty as { id: string }).id)
+    ? await db.prepare(`SELECT * FROM loyalty_transactions WHERE account_id = ? ORDER BY created_at DESC LIMIT 50`).all((loyalty as { id: string }).id)
     : [];
-  const topProducts = db
+  const topProducts = await db
     .prepare(
       `SELECT p.name, SUM(sl.qty_milli) qty_milli, SUM(sl.total_cents) total_cents, COUNT(*) purchases
        FROM sale_lines sl
@@ -175,36 +175,36 @@ export function getCustomerDetail(orgId: string, customerId: string) {
        GROUP BY p.id ORDER BY total_cents DESC LIMIT 10`,
     )
     .all(orgId, customerId);
-  const dataRequests = db.prepare(`SELECT * FROM data_requests WHERE org_id = ? AND customer_id = ? ORDER BY requested_at DESC`).all(orgId, customerId);
+  const dataRequests = await db.prepare(`SELECT * FROM data_requests WHERE org_id = ? AND customer_id = ? ORDER BY requested_at DESC`).all(orgId, customerId);
   return { customer: customer!, sales, loyalty, loyaltyTx, topProducts, dataRequests };
 }
 
 /* ------------------------------ Loyalty ----------------------------- */
 
-export function adjustLoyaltyPoints(
+export async function adjustLoyaltyPoints(
   orgId: string,
   customerId: string,
   delta: number,
   note: string,
   actor: { userId: string; label: string },
-): { balance: number } {
+): Promise<{ balance: number }> {
   const db = getDb();
   let balance = 0;
-  tx(db, () => {
-    let account = db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, customerId) as { id: string; points_balance: number } | undefined;
+  await tx(db, async () => {
+    let account = (await db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, customerId)) as { id: string; points_balance: number } | undefined;
     if (!account) {
       const id = newId("loy");
-      db.prepare(`INSERT INTO loyalty_accounts (id, org_id, customer_id, points_balance, tier, created_at) VALUES (?, ?, ?, 0, 'base', ?)`).run(id, orgId, customerId, Date.now());
+      await db.prepare(`INSERT INTO loyalty_accounts (id, org_id, customer_id, points_balance, tier, created_at) VALUES (?, ?, ?, 0, 'base', ?)`).run(id, orgId, customerId, Date.now());
       account = { id, points_balance: 0 };
     }
     const newBalance = account!.points_balance + delta;
     if (newBalance < 0) badRequest("Ajuste deixaria o saldo de pontos negativo.");
-    db.prepare(`UPDATE loyalty_accounts SET points_balance = ? WHERE id = ?`).run(newBalance, account!.id);
-    db.prepare(
+    await db.prepare(`UPDATE loyalty_accounts SET points_balance = ? WHERE id = ?`).run(newBalance, account!.id);
+    await db.prepare(
       `INSERT INTO loyalty_transactions (id, org_id, account_id, delta_points, reason, ref_type, note, created_at)
        VALUES (?, ?, ?, ?, 'adjust', 'manual', ?, ?)`,
     ).run(newId("loytx"), orgId, account!.id, delta, note, Date.now());
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "loyalty.adjust", resourceType: "loyalty_account", resourceId: account!.id, after: { delta, note } },
       db,
     );
@@ -215,21 +215,21 @@ export function adjustLoyaltyPoints(
 
 /* ------------------------- Data requests (GDPR) ---------------------- */
 
-export function createDataRequest(
+export async function createDataRequest(
   orgId: string,
   customerId: string,
   kind: "access" | "rectification" | "erasure" | "portability",
   note: string | undefined,
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
   const id = newId("dreq");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO data_requests (id, org_id, customer_id, kind, status, note, requested_at)
        VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
     ).run(id, orgId, customerId, kind, note ?? null, Date.now());
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: `gdpr.request_${kind}`, resourceType: "data_request", resourceId: id },
       db,
     );
@@ -245,27 +245,27 @@ export function createDataRequest(
  *    customer record is archived. This is a controlled, audited process —
  *    never a silent deletion.
  */
-export function resolveDataRequest(
+export async function resolveDataRequest(
   orgId: string,
   requestId: string,
   resolution: "fulfilled" | "rejected",
   actor: { userId: string; label: string },
   rejectionReason?: string,
-): { exportData?: unknown } {
+): Promise<{ exportData?: unknown }> {
   const db = getDb();
-  const request = db.prepare(`SELECT * FROM data_requests WHERE id = ? AND org_id = ?`).get(requestId, orgId) as { id: string; kind: string; customer_id: string; status: string } | undefined;
+  const request = (await db.prepare(`SELECT * FROM data_requests WHERE id = ? AND org_id = ?`).get(requestId, orgId)) as { id: string; kind: string; customer_id: string; status: string } | undefined;
   if (!request) notFound("Pedido de dados");
   if (request!.status !== "pending") throw new ApiError(409, "Pedido já resolvido.", "already_resolved");
 
   let exportData: unknown;
-  tx(db, () => {
+  await tx(db, async () => {
     if (resolution === "fulfilled") {
       if (request!.kind === "access" || request!.kind === "portability") {
-        exportData = getCustomerDetail(orgId, request!.customer_id);
+        exportData = await getCustomerDetail(orgId, request!.customer_id);
       }
       if (request!.kind === "erasure") {
-        const customer = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(request!.customer_id) as Record<string, unknown>;
-        db.prepare(
+        const customer = (await db.prepare(`SELECT * FROM customers WHERE id = ?`).get(request!.customer_id)) as Record<string, unknown>;
+        await db.prepare(
           `UPDATE customers SET name = 'Cliente eliminado (' || substr(id, 6, 6) || ')',
              email = NULL, phone = NULL, tax_id = NULL, address = NULL, city = NULL,
              notes = 'Registo anonimizado a pedido do titular (RGPD). Histórico financeiro preservado por obrigação legal.',
@@ -275,10 +275,10 @@ export function resolveDataRequest(
         exportData = { anonymized: true, preserved: "sales history (legal obligation)", before: { name: customer?.name } };
       }
     }
-    db.prepare(
+    await db.prepare(
       `UPDATE data_requests SET status = ?, resolved_at = ?, resolved_by = ?, note = COALESCE(note,'') || ? WHERE id = ?`,
     ).run(resolution, Date.now(), actor.userId, rejectionReason ? ` | Rejeição: ${rejectionReason}` : "", requestId);
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: `gdpr.resolve_${resolution}`, resourceType: "data_request", resourceId: requestId,

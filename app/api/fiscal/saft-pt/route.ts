@@ -30,7 +30,7 @@ export const GET = routeHandler(async (_body, request) => {
       { status: 400 },
     );
   }
-  const { xml, fileName } = buildSaftPt(getDb(), ctx.orgId, { from, to });
+  const { xml, fileName } = await buildSaftPt(getDb(), ctx.orgId, { from, to });
   return new NextResponse(xml, {
     status: 200,
     headers: {

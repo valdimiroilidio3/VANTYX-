@@ -13,14 +13,14 @@ export const GET = routeHandler(async (_body, _request, context) => {
   const ctx = await requirePermission("inventory.count");
   const { id } = await context.params;
   const db = getDb();
-  const sheet = db
+  const sheet = await db
     .prepare(
       `SELECT cs.*, w.name as warehouse_name FROM count_sheets cs
        JOIN warehouses w ON w.id = cs.warehouse_id WHERE cs.id = ? AND cs.org_id = ?`,
     )
     .get(id, ctx.orgId);
   if (!sheet) notFound("Folha de contagem");
-  const lines = db
+  const lines = await db
     .prepare(
       `SELECT l.*, p.name as product_name, p.sku, p.unit, v.label as variant_label
        FROM count_sheet_lines l
@@ -46,7 +46,7 @@ export const POST = routeHandler(async (body, _request, context) => {
   const { id } = await context.params;
   const actor = { userId: ctx.userId, label: ctx.userName };
   if (body.action === "count") {
-    recordCountLine(ctx.orgId, id, body.lineId, body.countedMilli, actor);
+    await recordCountLine(ctx.orgId, id, body.lineId, body.countedMilli, actor);
     return { recorded: body.lineId };
   }
   return completeCountSheet(ctx.orgId, id, actor);

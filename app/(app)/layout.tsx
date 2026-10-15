@@ -17,9 +17,9 @@ export default async function AppLayout({
   const ctx = await getAuthContext();
   if (!ctx) redirect("/login");
 
-  const profile = getOrgProfile(ctx.orgId);
-  const branches = listBranches(ctx.orgId);
-  const terminals = listTerminals(ctx.orgId);
+  const profile = await getOrgProfile(ctx.orgId);
+  const branches = await listBranches(ctx.orgId);
+  const terminals = await listTerminals(ctx.orgId);
 
   const bootstrap = {
     user: {
@@ -46,8 +46,8 @@ export default async function AppLayout({
       settings: profile.settings as Record<string, unknown>,
       onboarded: profile.onboardedAt != null,
     },
-    modules: enabledModuleIds(ctx.orgId),
-    navigation: navigationFor(ctx.orgId, ctx.permissions),
+    modules: await enabledModuleIds(ctx.orgId),
+    navigation: await navigationFor(ctx.orgId, ctx.permissions),
     branches: branches.map((b) => ({
       id: b.id,
       name: b.name,

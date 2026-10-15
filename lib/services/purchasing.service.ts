@@ -27,25 +27,25 @@ export interface SupplierInput {
   leadTimeDays?: number | null;
 }
 
-export function createSupplier(orgId: string, input: SupplierInput): string {
+export async function createSupplier(orgId: string, input: SupplierInput): Promise<string> {
   if (!input.name?.trim()) badRequest("Nome do fornecedor é obrigatório.");
   const db = getDb();
   const id = newId("sup");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO suppliers (id, org_id, name, contact_name, email, phone, tax_id, address, payment_terms, lead_time_days, status, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
   ).run(id, orgId, input.name.trim(), input.contactName ?? null, input.email ?? null, input.phone ?? null, input.taxId ?? null, input.address ?? null, input.paymentTerms ?? null, input.leadTimeDays ?? null, Date.now(), Date.now());
   return id;
 }
 
-export function listSuppliers(orgId: string, opts: { search?: string } = {}) {
+export async function listSuppliers(orgId: string, opts: { search?: string } = {}) {
   const db = getDb();
   if (opts.search) {
-    return db.prepare(
+    return await db.prepare(
       `SELECT * FROM suppliers WHERE org_id = ? AND (name LIKE ? OR COALESCE(email,'') LIKE ?) ORDER BY name`,
     ).all(orgId, `%${opts.search}%`, `%${opts.search}%`);
   }
-  return db.prepare(`SELECT * FROM suppliers WHERE org_id = ? ORDER BY name`).all(orgId);
+  return await db.prepare(`SELECT * FROM suppliers WHERE org_id = ? ORDER BY name`).all(orgId);
 }
 
 /* -------------------------- Purchase orders -------------------------- */
@@ -67,10 +67,10 @@ export interface PurchaseOrderInput {
   supervisor?: { userId: string; pin: string } | null;
 }
 
-export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): { poId: string; poNumber: string; status: string; approvalRequired?: boolean } {
+export async function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): Promise<{ poId: string; poNumber: string; status: string; approvalRequired?: boolean }> {
   if (!input.lines.length) badRequest("Encomenda sem linhas.");
   const db = getDb();
-  const supplier = db.prepare(`SELECT id, name FROM suppliers WHERE id = ? AND org_id = ?`).get(input.supplierId, orgId);
+  const supplier = await db.prepare(`SELECT id, name FROM suppliers WHERE id = ? AND org_id = ?`).get(input.supplierId, orgId);
   if (!supplier) notFound("Fornecedor");
 
   const now = Date.now();
@@ -88,7 +88,7 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
   const total = subtotal + tax;
 
   // Approval requirement via rules engine (e.g. purchases > limit)
-  const rules = loadEnabledRules(db, orgId);
+  const rules = await loadEnabledRules(db, orgId);
   const ctx: RuleContext = {
     "purchase.total_cents": total,
     "user.role": input.actor.roleKey,
@@ -98,7 +98,7 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
   const resolution = resolveDecisions(decisions);
   let supervisorApproved = false;
   if (resolution.approval && input.supervisor) {
-    if (!loginWithPin(input.supervisor.userId, input.supervisor.pin)) {
+    if (!await loginWithPin(input.supervisor.userId, input.supervisor.pin)) {
       conflict("PIN de supervisor inválido.");
     }
     supervisorApproved = true;
@@ -112,8 +112,8 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
   const poNumber = `PC-${new Date(now).getFullYear()}-${String(now).slice(-6)}`;
   const status = requiresApproval ? "pending_approval" : "draft";
 
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO purchase_orders
         (id, org_id, po_number, supplier_id, warehouse_id, status, expected_at,
          subtotal_cents, tax_cents, total_cents, requires_approval, approved_by, approved_at,
@@ -131,7 +131,7 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const line of resolved) {
-      insertLine.run(newId("pol"), orgId, poId, line.productId, line.variantId ?? null, line.qtyMilli, line.unitCostCents, line.taxRateBps, line.note ?? null);
+      await insertLine.run(newId("pol"), orgId, poId, line.productId, line.variantId ?? null, line.qtyMilli, line.unitCostCents, line.taxRateBps, line.note ?? null);
     }
     // Record supplier price history
     const insertHistory = db.prepare(
@@ -139,9 +139,9 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const line of resolved) {
-      insertHistory.run(newId("sph"), orgId, input.supplierId, line.productId, line.variantId ?? null, line.unitCostCents, poId, now);
+      await insertHistory.run(newId("sph"), orgId, input.supplierId, line.productId, line.variantId ?? null, line.unitCostCents, poId, now);
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: input.actor.userId, actorLabel: input.actor.label,
         action: "purchase.create", resourceType: "purchase_order", resourceId: poId,
@@ -152,23 +152,23 @@ export function createPurchaseOrder(orgId: string, input: PurchaseOrderInput): {
   });
 
   if (requiresApproval) {
-    db.prepare(
+    await db.prepare(
       `INSERT INTO approvals (id, org_id, kind, ref_type, ref_id, params, status, requested_by, created_at)
        VALUES (?, ?, 'purchase', 'purchase_order', ?, ?, 'pending', ?, ?)`,
     ).run(newId("appr"), orgId, poId, JSON.stringify({ totalCents: total, poNumber }), input.actor.userId, now);
-    emitDomainEvent("purchase.approval_required", { orgId, poId, poNumber, totalCents: total });
+    await emitDomainEvent("purchase.approval_required", { orgId, poId, poNumber, totalCents: total });
   }
   return { poId, poNumber, status, approvalRequired: requiresApproval };
 }
 
-export function setPurchaseOrderStatus(
+export async function setPurchaseOrderStatus(
   orgId: string,
   poId: string,
   status: "sent" | "cancelled",
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const po = db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId) as { id: string; status: string } | undefined;
+  const po = (await db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId)) as { id: string; status: string } | undefined;
   if (!po) notFound("Encomenda");
   if (!["draft", "pending_approval", "sent"].includes(po!.status)) {
     conflict(`Não pode alterar o estado de uma encomenda "${po!.status}".`);
@@ -176,35 +176,35 @@ export function setPurchaseOrderStatus(
   if (po!.status === "pending_approval" && status === "sent") {
     conflict("Encomenda aguarda aprovação — aprove antes de enviar.");
   }
-  tx(db, () => {
-    db.prepare(`UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?`).run(status, Date.now(), poId);
-    writeAudit(
+  await tx(db, async () => {
+    await db.prepare(`UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?`).run(status, Date.now(), poId);
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: `purchase.status_${status}`, resourceType: "purchase_order", resourceId: poId },
       db,
     );
   });
 }
 
-export function approvePurchaseOrder(
+export async function approvePurchaseOrder(
   orgId: string,
   poId: string,
   decision: "approved" | "rejected",
   reason: string | undefined,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    const po = db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId) as { id: string; status: string } | undefined;
+  await tx(db, async () => {
+    const po = (await db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId)) as { id: string; status: string } | undefined;
     if (!po) notFound("Encomenda");
     if (po!.status !== "pending_approval") conflict("Encomenda não está pendente de aprovação.");
     const newStatus = decision === "approved" ? "draft" : "cancelled";
-    db.prepare(`UPDATE purchase_orders SET status = ?, approved_by = ?, approved_at = ?, updated_at = ?, requires_approval = 0 WHERE id = ?`)
+    await db.prepare(`UPDATE purchase_orders SET status = ?, approved_by = ?, approved_at = ?, updated_at = ?, requires_approval = 0 WHERE id = ?`)
       .run(newStatus, decision === "approved" ? actor.userId : null, Date.now(), Date.now(), poId);
-    db.prepare(
+    await db.prepare(
       `UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, reason = ?
        WHERE org_id = ? AND ref_id = ? AND status = 'pending'`,
     ).run(decision, actor.userId, Date.now(), reason ?? null, orgId, poId);
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: `purchase.${decision}`, resourceType: "purchase_order", resourceId: poId, after: { reason: reason ?? null } },
       db,
     );
@@ -222,32 +222,32 @@ export interface ReceiptLineInput {
   serialNumbers?: string[];
 }
 
-export function receivePurchaseOrder(
+export async function receivePurchaseOrder(
   orgId: string,
   poId: string,
   lines: ReceiptLineInput[],
   data: { note?: string; actor: { userId: string; label: string } },
-): { receiptId: string; discrepancies: number } {
+): Promise<{ receiptId: string; discrepancies: number }> {
   if (!lines.length) badRequest("Receção sem linhas.");
   const db = getDb();
   const pendingEvents: PendingEvent[] = [];
   let receiptId = "";
   let discrepancies = 0;
 
-  tx(db, () => {
+  await tx(db, async () => {
     const now = Date.now();
-    const po = db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId) as PoRow | undefined;
+    const po = (await db.prepare(`SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?`).get(poId, orgId)) as PoRow | undefined;
     if (!po) notFound("Encomenda");
     if (!["sent", "draft", "partially_received"].includes(po!.status)) {
       conflict(`Encomenda no estado "${po!.status}" não pode ser recebida.`);
     }
     if (po!.status === "draft") {
       // Receiving implies the order went out; mark sent automatically.
-      db.prepare(`UPDATE purchase_orders SET status = 'sent', updated_at = ? WHERE id = ?`).run(now, poId);
+      await db.prepare(`UPDATE purchase_orders SET status = 'sent', updated_at = ? WHERE id = ?`).run(now, poId);
     }
 
     receiptId = newId("gr");
-    db.prepare(
+    await db.prepare(
       `INSERT INTO goods_receipts (id, org_id, po_id, warehouse_id, note, received_by, received_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(receiptId, orgId, poId, po!.warehouse_id, data.note ?? null, data.actor.userId, now);
@@ -258,7 +258,7 @@ export function receivePurchaseOrder(
     );
 
     for (const line of lines) {
-      const poLine = db.prepare(`SELECT * FROM purchase_order_lines WHERE id = ? AND po_id = ?`).get(line.poLineId, poId) as PoLineRow | undefined;
+      const poLine = (await db.prepare(`SELECT * FROM purchase_order_lines WHERE id = ? AND po_id = ?`).get(line.poLineId, poId)) as PoLineRow | undefined;
       if (!poLine) notFound("Linha de encomenda");
       const remaining = poLine!.qty_milli - poLine!.received_milli;
       if (line.qtyMilli <= 0 || line.qtyMilli > remaining) {
@@ -267,16 +267,16 @@ export function receivePurchaseOrder(
       const unitCost = line.unitCostCents ?? poLine!.unit_cost_cents;
       if (unitCost !== poLine!.unit_cost_cents) discrepancies++;
 
-      insertReceiptLine.run(
+      await insertReceiptLine.run(
         newId("grl"), orgId, receiptId, poLine!.id, poLine!.product_id, poLine!.variant_id,
         line.qtyMilli, unitCost, line.batchNumber ?? null, line.expiryDate ?? null,
         line.serialNumbers ? JSON.stringify(line.serialNumbers) : null,
       );
-      db.prepare(`UPDATE purchase_order_lines SET received_milli = received_milli + ? WHERE id = ?`)
+      await db.prepare(`UPDATE purchase_order_lines SET received_milli = received_milli + ? WHERE id = ?`)
         .run(line.qtyMilli, poLine!.id);
 
       // Stock in + weighted average cost update
-      const delta = applyStockDelta(db, {
+      const delta = await applyStockDelta(db, {
         orgId,
         warehouseId: po!.warehouse_id,
         productId: poLine!.product_id,
@@ -291,10 +291,10 @@ export function receivePurchaseOrder(
       pendingEvents.push(...delta.events);
 
       // Batch tracking
-      const product = db.prepare(`SELECT track_batches, track_serials FROM products WHERE id = ?`).get(poLine!.product_id) as { track_batches: number; track_serials: number };
+      const product = (await db.prepare(`SELECT track_batches, track_serials FROM products WHERE id = ?`).get(poLine!.product_id)) as { track_batches: number; track_serials: number };
       if (product.track_batches === 1) {
         if (!line.batchNumber) badRequest("Produto com rastreamento de lote exige número de lote na receção.");
-        receiveBatch(db, {
+        await receiveBatch(db, {
           orgId, warehouseId: po!.warehouse_id, productId: poLine!.product_id,
           variantId: poLine!.variant_id, batchNumber: line.batchNumber!,
           expiryDate: line.expiryDate ?? null, qtyMilli: line.qtyMilli,
@@ -307,21 +307,21 @@ export function receivePurchaseOrder(
            VALUES (?, ?, ?, ?, ?, ?, 'in_stock', ?)`,
         );
         for (const serial of line.serialNumbers) {
-          insertSerial.run(newId("ser"), orgId, poLine!.product_id, poLine!.variant_id, po!.warehouse_id, serial, now);
+          await insertSerial.run(newId("ser"), orgId, poLine!.product_id, poLine!.variant_id, po!.warehouse_id, serial, now);
         }
         if (line.serialNumbers.length * 1000 !== line.qtyMilli) discrepancies++;
       }
     }
 
     // PO status: fully or partially received
-    const totals = db.prepare(
+    const totals = (await db.prepare(
       `SELECT COALESCE(SUM(qty_milli),0) ordered, COALESCE(SUM(received_milli),0) received
        FROM purchase_order_lines WHERE po_id = ?`,
-    ).get(poId) as { ordered: number; received: number };
+    ).get(poId)) as { ordered: number; received: number };
     const newStatus = totals.received >= totals.ordered ? "received" : "partially_received";
-    db.prepare(`UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?`).run(newStatus, now, poId);
+    await db.prepare(`UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?`).run(newStatus, now, poId);
 
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: data.actor.userId, actorLabel: data.actor.label,
         action: "purchase.receive", resourceType: "goods_receipt", resourceId: receiptId,
@@ -332,10 +332,10 @@ export function receivePurchaseOrder(
   });
 
   for (const pending of pendingEvents) {
-    if (pending.event === "stock.below_min") emitDomainEvent("stock.below_min", pending.payload as never);
-    if (pending.event === "stock.negative") emitDomainEvent("stock.negative", pending.payload as never);
+    if (pending.event === "stock.below_min") await emitDomainEvent("stock.below_min", pending.payload as never);
+    if (pending.event === "stock.negative") await emitDomainEvent("stock.negative", pending.payload as never);
   }
-  emitDomainEvent("purchase.received", { orgId, poId, receiptId, discrepancies });
+  await emitDomainEvent("purchase.received", { orgId, poId, receiptId, discrepancies });
   return { receiptId, discrepancies };
 }
 
@@ -357,10 +357,10 @@ interface PoLineRow {
   unit_cost_cents: number;
 }
 
-export function listPurchaseOrders(
+export async function listPurchaseOrders(
   orgId: string,
   opts: { status?: string; supplierId?: string; limit?: number; offset?: number } = {},
-): { rows: unknown[]; total: number } {
+): Promise<{ rows: unknown[]; total: number }> {
   const db = getDb();
   const where: string[] = ["po.org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -368,7 +368,7 @@ export function listPurchaseOrders(
   if (opts.supplierId) { where.push("po.supplier_id = ?"); params.push(opts.supplierId); }
   const limit = Math.min(opts.limit ?? 25, 200);
   const offset = opts.offset ?? 0;
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT po.*, s.name as supplier_name, w.name as warehouse_name, u.name as created_by_name,
        (SELECT COUNT(*) FROM purchase_order_lines l WHERE l.po_id = po.id) as line_count
      FROM purchase_orders po
@@ -378,13 +378,13 @@ export function listPurchaseOrders(
      WHERE ${where.join(" AND ")}
      ORDER BY po.created_at DESC LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset);
-  const total = (db.prepare(`SELECT COUNT(*) n FROM purchase_orders po WHERE ${where.join(" AND ")}`).get(...params) as { n: number }).n;
+  const total = ((await db.prepare(`SELECT COUNT(*) n FROM purchase_orders po WHERE ${where.join(" AND ")}`).get(...params)) as { n: number }).n;
   return { rows, total };
 }
 
-export function getPurchaseOrder(orgId: string, poId: string) {
+export async function getPurchaseOrder(orgId: string, poId: string) {
   const db = getDb();
-  const po = db.prepare(
+  const po = await db.prepare(
     `SELECT po.*, s.name as supplier_name, w.name as warehouse_name
      FROM purchase_orders po
      JOIN suppliers s ON s.id = po.supplier_id
@@ -392,22 +392,22 @@ export function getPurchaseOrder(orgId: string, poId: string) {
      WHERE po.id = ? AND po.org_id = ?`,
   ).get(poId, orgId);
   if (!po) notFound("Encomenda");
-  const lines = db.prepare(
+  const lines = await db.prepare(
     `SELECT l.*, p.name as product_name, p.sku, v.label as variant_label
      FROM purchase_order_lines l
      JOIN products p ON p.id = l.product_id
      LEFT JOIN product_variants v ON v.id = l.variant_id
      WHERE l.po_id = ?`,
   ).all(poId);
-  const receipts = db.prepare(`SELECT * FROM goods_receipts WHERE po_id = ? ORDER BY received_at DESC`).all(poId);
+  const receipts = await db.prepare(`SELECT * FROM goods_receipts WHERE po_id = ? ORDER BY received_at DESC`).all(poId);
   return { po, lines, receipts };
 }
 
 /** Replenishment suggestions from real sales velocity + reorder points. */
-export function purchaseSuggestions(orgId: string, daysBack = 30, limit = 30) {
+export async function purchaseSuggestions(orgId: string, daysBack = 30, limit = 30) {
   const db = getDb();
   const since = Date.now() - daysBack * 86_400_000;
-  return db.prepare(
+  return (await db.prepare(
     `WITH velocity AS (
        SELECT sl.product_id, SUM(sl.qty_milli) / ? as avg_daily_milli
        FROM sale_lines sl JOIN sales s ON s.id = sl.sale_id
@@ -430,7 +430,7 @@ export function purchaseSuggestions(orgId: string, daysBack = 30, limit = 30) {
          OR (v.avg_daily_milli > 0 AND COALESCE((SELECT SUM(s3.qty_milli) FROM stock_levels s3 WHERE s3.org_id = p.org_id AND s3.product_id = p.id),0) <= v.avg_daily_milli * 7)
        )
      ORDER BY avg_daily_milli DESC LIMIT ?`,
-  ).all(daysBack, orgId, since, orgId, limit) as PurchaseSuggestion[];
+  ).all(daysBack, orgId, since, orgId, limit)) as PurchaseSuggestion[];
 }
 
 export interface PurchaseSuggestion {

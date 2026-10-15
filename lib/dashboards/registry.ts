@@ -187,7 +187,7 @@ export function periodToFilter(
   }
 }
 
-type Fetcher = (ctx: WidgetDataContext) => WidgetPayload;
+type Fetcher = (ctx: WidgetDataContext) => WidgetPayload | Promise<WidgetPayload>;
 
 function ok(widget: string, data: unknown, source?: string): WidgetPayload {
   return { widget, ok: true, data, source, fetchedAt: Date.now() };
@@ -197,8 +197,8 @@ function fail(widget: string, error: string): WidgetPayload {
   return { widget, ok: false, error, fetchedAt: Date.now() };
 }
 
-function buildCtx(orgId: string, branchId: string | undefined, period: PeriodKey): WidgetDataContext {
-  const profile = getOrgProfile(orgId);
+async function buildCtx(orgId: string, branchId: string | undefined, period: PeriodKey): Promise<WidgetDataContext> {
+  const profile = await getOrgProfile(orgId);
   const { current } = periodToFilter(period, profile.timezone, branchId);
   return { orgId, branchId, period, from: current.from, to: current.to, tz: profile.timezone };
 }
@@ -207,41 +207,42 @@ function buildCtx(orgId: string, branchId: string | undefined, period: PeriodKey
  * Fetches data for a single widget. Errors are captured per-widget so one
  * failing provider never breaks the whole dashboard.
  */
-export function fetchWidgetData(
+export async function fetchWidgetData(
   widgetId: string,
   orgId: string,
   opts: { branchId?: string; period?: PeriodKey } = {},
-): WidgetPayload {
-  const ctx = buildCtx(orgId, opts.branchId, opts.period ?? "today");
+): Promise<WidgetPayload> {
+  const ctx = await buildCtx(orgId, opts.branchId, opts.period ?? "today");
   const fetcher = FETCHERS[widgetId];
   if (!fetcher) return fail(widgetId, `Widget desconhecido: ${widgetId}`);
   try {
-    return fetcher(ctx);
+    // await dentro do try: erros assíncronos também são capturados por widget
+    return await fetcher(ctx);
   } catch (err) {
     return fail(widgetId, err instanceof Error ? err.message : "Erro ao carregar dados");
   }
 }
 
 const FETCHERS: Record<string, Fetcher> = {
-  "sales-today": (ctx) => {
+  "sales-today": async (ctx) => {
     const { current, previous } = periodToFilter(ctx.period, ctx.tz, ctx.branchId);
-    const data = comparePeriods(ctx.orgId, current, previous);
+    const data = await comparePeriods(ctx.orgId, current, previous);
     return ok("sales-today", data, "sales (factos)");
   },
-  "transactions-today": (ctx) => {
-    const summary = salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
+  "transactions-today": async (ctx) => {
+    const summary = await salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
     return ok("transactions-today", { transactions: summary.transactions, itemsSold: summary.itemsSold }, "sales (factos)");
   },
-  "avg-ticket": (ctx) => {
-    const summary = salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
+  "avg-ticket": async (ctx) => {
+    const summary = await salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
     return ok("avg-ticket", { avgTicketCents: summary.avgTicketCents, transactions: summary.transactions }, "sales (factos)");
   },
-  "revenue-period": (ctx) => {
+  "revenue-period": async (ctx) => {
     const { current, previous } = periodToFilter(ctx.period, ctx.tz, ctx.branchId);
-    return ok("revenue-period", comparePeriods(ctx.orgId, current, previous), "sales (factos)");
+    return ok("revenue-period", await comparePeriods(ctx.orgId, current, previous), "sales (factos)");
   },
-  "margin-estimate": (ctx) => {
-    const summary = salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
+  "margin-estimate": async (ctx) => {
+    const summary = await salesSummary(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId });
     return ok(
       "margin-estimate",
       {
@@ -253,11 +254,11 @@ const FETCHERS: Record<string, Fetcher> = {
       "estimativa: receita líquida − custo registado (não é lucro contabilístico)",
     );
   },
-  "sales-by-hour": (ctx) => ok("sales-by-hour", salesByHour(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, ctx.tz), "sales (factos)"),
-  "sales-by-branch": (ctx) => ok("sales-by-branch", salesByBranch(ctx.orgId, { from: ctx.from, to: ctx.to }), "sales (factos)"),
-  "top-products": (ctx) => ok("top-products", topProducts(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, 8), "sale_lines (factos)"),
-  "open-terminals": (ctx) => {
-    const rows = getDb().prepare(
+  "sales-by-hour": async (ctx) => ok("sales-by-hour", await salesByHour(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, ctx.tz), "sales (factos)"),
+  "sales-by-branch": async (ctx) => ok("sales-by-branch", await salesByBranch(ctx.orgId, { from: ctx.from, to: ctx.to }), "sales (factos)"),
+  "top-products": async (ctx) => ok("top-products", await topProducts(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, 8), "sale_lines (factos)"),
+  "open-terminals": async (ctx) => {
+    const rows = await getDb().prepare(
       `SELECT cs.id, t.name as terminal, b.name as branch, cs.opened_at, u.name as opened_by
        FROM cash_sessions cs JOIN terminals t ON t.id = cs.terminal_id
        JOIN branches b ON b.id = cs.branch_id LEFT JOIN users u ON u.id = cs.opened_by
@@ -265,20 +266,20 @@ const FETCHERS: Record<string, Fetcher> = {
     ).all(ctx.orgId, ...(ctx.branchId ? [ctx.branchId] : []));
     return ok("open-terminals", rows, "cash_sessions (factos)");
   },
-  "cash-difference": (ctx) => ok("cash-difference", cashDifferences(ctx.orgId, 5), "cash_sessions (factos)"),
-  "payment-mix": (ctx) => ok("payment-mix", paymentMix(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "sale_payments (factos)"),
-  "low-stock": (ctx) => {
-    const { rows } = stockOverview(ctx.orgId, { belowMin: true, warehouseId: ctx.branchId ? undefined : undefined, limit: 8 });
+  "cash-difference": async (ctx) => ok("cash-difference", await cashDifferences(ctx.orgId, 5), "cash_sessions (factos)"),
+  "payment-mix": async (ctx) => ok("payment-mix", await paymentMix(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "sale_payments (factos)"),
+  "low-stock": async (ctx) => {
+    const { rows } = await stockOverview(ctx.orgId, { belowMin: true, warehouseId: ctx.branchId ? undefined : undefined, limit: 8 });
     return ok("low-stock", rows, "stock_levels (factos)");
   },
-  "critical-stock": (ctx) => ok("critical-stock", { count: criticalStockCount(ctx.orgId) }, "stock_levels (factos)"),
-  "stock-valuation": (ctx) => ok("stock-valuation", stockValuation(ctx.orgId), "estimativa: qty × custo médio ponderado"),
-  "no-movement": (ctx) => ok("no-movement", noMovementProducts(ctx.orgId, Date.now() - 60 * 86_400_000, 8), "stock_movements (factos)"),
-  "expiring-batches": (ctx) => ok("expiring-batches", expiringBatches(ctx.orgId).slice(0, 8), "batches (factos)"),
-  "high-rotation": (ctx) => ok("high-rotation", stockRotation(ctx.orgId, Math.max(1, Math.round((ctx.to - ctx.from) / 86_400_000))).slice(0, 8), "sale_lines (factos)"),
-  "replenishment-queue": (ctx) => ok("replenishment-queue", purchaseSuggestions(ctx.orgId, 30, 8), "sugestão: velocidade de venda + pontos de encomenda"),
-  "pending-orders": (ctx) => {
-    const rows = getDb().prepare(
+  "critical-stock": async (ctx) => ok("critical-stock", { count: await criticalStockCount(ctx.orgId) }, "stock_levels (factos)"),
+  "stock-valuation": async (ctx) => ok("stock-valuation", await stockValuation(ctx.orgId), "estimativa: qty × custo médio ponderado"),
+  "no-movement": async (ctx) => ok("no-movement", await noMovementProducts(ctx.orgId, Date.now() - 60 * 86_400_000, 8), "stock_movements (factos)"),
+  "expiring-batches": async (ctx) => ok("expiring-batches", (await expiringBatches(ctx.orgId)).slice(0, 8), "batches (factos)"),
+  "high-rotation": async (ctx) => ok("high-rotation", (await stockRotation(ctx.orgId, Math.max(1, Math.round((ctx.to - ctx.from) / 86_400_000)))).slice(0, 8), "sale_lines (factos)"),
+  "replenishment-queue": async (ctx) => ok("replenishment-queue", await purchaseSuggestions(ctx.orgId, 30, 8), "sugestão: velocidade de venda + pontos de encomenda"),
+  "pending-orders": async (ctx) => {
+    const rows = await getDb().prepare(
       `SELECT po.po_number, po.status, po.total_cents, s.name as supplier_name, po.expected_at
        FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
        WHERE po.org_id = ? AND po.status IN ('sent','pending_approval','partially_received','draft')
@@ -286,41 +287,41 @@ const FETCHERS: Record<string, Fetcher> = {
     ).all(ctx.orgId);
     return ok("pending-orders", rows, "purchase_orders (factos)");
   },
-  "purchase-suggestions": (ctx) => ok("purchase-suggestions", purchaseSuggestions(ctx.orgId, 30, 8), "sugestão: velocidade de venda + stock"),
-  "new-customers": (ctx) => ok("new-customers", { count: newCustomers(ctx.orgId, { from: ctx.from, to: ctx.to }) }, "customers (factos)"),
-  "loyalty-summary": (ctx) => ok("loyalty-summary", loyaltySummary(ctx.orgId), "loyalty_accounts (factos)"),
-  "credit-exposure": (ctx) => ok("credit-exposure", creditExposure(ctx.orgId), "customers (factos)"),
-  "margin-by-category": (ctx) => ok("margin-by-category", marginByCategory(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "estimativa por categoria"),
-  "staff-performance": (ctx) => ok("staff-performance", performanceByUser(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "sales (factos)"),
-  "stockouts": (ctx) => ok("stockouts", { count: stockoutCount(ctx.orgId, { from: ctx.from, to: ctx.to }) }, "stock_movements (factos)"),
-  "active-orders": (ctx) => {
-    const orders = listOpenOrders(ctx.orgId, ctx.branchId);
+  "purchase-suggestions": async (ctx) => ok("purchase-suggestions", await purchaseSuggestions(ctx.orgId, 30, 8), "sugestão: velocidade de venda + stock"),
+  "new-customers": async (ctx) => ok("new-customers", { count: await newCustomers(ctx.orgId, { from: ctx.from, to: ctx.to }) }, "customers (factos)"),
+  "loyalty-summary": async (ctx) => ok("loyalty-summary", await loyaltySummary(ctx.orgId), "loyalty_accounts (factos)"),
+  "credit-exposure": async (ctx) => ok("credit-exposure", await creditExposure(ctx.orgId), "customers (factos)"),
+  "margin-by-category": async (ctx) => ok("margin-by-category", await marginByCategory(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "estimativa por categoria"),
+  "staff-performance": async (ctx) => ok("staff-performance", await performanceByUser(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }), "sales (factos)"),
+  "stockouts": async (ctx) => ok("stockouts", { count: await stockoutCount(ctx.orgId, { from: ctx.from, to: ctx.to }) }, "stock_movements (factos)"),
+  "active-orders": async (ctx) => {
+    const orders = await listOpenOrders(ctx.orgId, ctx.branchId);
     return ok("active-orders", { count: orders.length, orders: orders.slice(0, 8) }, "r_orders (factos)");
   },
-  "table-occupancy": (ctx) => {
-    const branchId = ctx.branchId ?? defaultBranch(ctx.orgId);
-    return ok("table-occupancy", tableOccupancy(ctx.orgId, branchId), "r_tables (factos)");
+  "table-occupancy": async (ctx) => {
+    const branchId = ctx.branchId ?? await defaultBranch(ctx.orgId);
+    return ok("table-occupancy", await tableOccupancy(ctx.orgId, branchId), "r_tables (factos)");
   },
-  "avg-prep-time": (ctx) => ok("avg-prep-time", { avgMs: avgPreparationTime(ctx.orgId, Date.now() - 86_400_000) }, "kitchen_tickets (factos)"),
-  "top-dishes": (ctx) => ok("top-dishes", topDishes(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, 8), "sale_lines (factos)"),
-  "sales-by-shift": (ctx) => ok("sales-by-shift", salesByShift(ctx.orgId, Date.now() - 86_400_000, Date.now()), "shifts+sales (factos)"),
-  "kitchen-load": (ctx) => ok("kitchen-load", openKitchenStats(ctx.orgId), "kitchen_tickets (factos)"),
-  "sales-by-size": (ctx) => ok("sales-by-size", salesByVariantAttribute(ctx.orgId, { from: ctx.from, to: ctx.to }, "size"), "sale_lines+variants (factos)"),
-  "sales-by-color": (ctx) => ok("sales-by-color", salesByVariantAttribute(ctx.orgId, { from: ctx.from, to: ctx.to }, "color"), "sale_lines+variants (factos)"),
-  "variant-stock": (ctx) => {
-    const rows = getDb().prepare(
+  "avg-prep-time": async (ctx) => ok("avg-prep-time", { avgMs: await avgPreparationTime(ctx.orgId, Date.now() - 86_400_000) }, "kitchen_tickets (factos)"),
+  "top-dishes": async (ctx) => ok("top-dishes", await topDishes(ctx.orgId, { from: ctx.from, to: ctx.to, branchId: ctx.branchId }, 8), "sale_lines (factos)"),
+  "sales-by-shift": async (ctx) => ok("sales-by-shift", await salesByShift(ctx.orgId, Date.now() - 86_400_000, Date.now()), "shifts+sales (factos)"),
+  "kitchen-load": async (ctx) => ok("kitchen-load", await openKitchenStats(ctx.orgId), "kitchen_tickets (factos)"),
+  "sales-by-size": async (ctx) => ok("sales-by-size", await salesByVariantAttribute(ctx.orgId, { from: ctx.from, to: ctx.to }, "size"), "sale_lines+variants (factos)"),
+  "sales-by-color": async (ctx) => ok("sales-by-color", await salesByVariantAttribute(ctx.orgId, { from: ctx.from, to: ctx.to }, "color"), "sale_lines+variants (factos)"),
+  "variant-stock": async (ctx) => {
+    const rows = await getDb().prepare(
       `SELECT p.name, v.label, s.qty_milli FROM stock_levels s
        JOIN products p ON p.id = s.product_id JOIN product_variants v ON v.id = s.variant_id
        WHERE s.org_id = ? AND s.qty_milli <= 2000 ORDER BY s.qty_milli ASC LIMIT 8`,
     ).all(ctx.orgId);
     return ok("variant-stock", rows, "stock_levels (factos)");
   },
-  "return-rate": (ctx) => ok("return-rate", returnRate(ctx.orgId, { from: ctx.from, to: ctx.to }), "returns/sales (factos)"),
-  "active-work-orders": (ctx) => ok("active-work-orders", openWorkOrders(ctx.orgId), "work_orders (factos)"),
-  "dead-stock-refs": (ctx) => ok("dead-stock-refs", noMovementProducts(ctx.orgId, Date.now() - 90 * 86_400_000, 8), "stock_movements (factos)"),
-  "rma-open": (ctx) => ok("rma-open", openWorkOrders(ctx.orgId), "work_orders (factos)"),
-  "warranty-expiring": (ctx) => {
-    const rows = getDb().prepare(
+  "return-rate": async (ctx) => ok("return-rate", await returnRate(ctx.orgId, { from: ctx.from, to: ctx.to }), "returns/sales (factos)"),
+  "active-work-orders": async (ctx) => ok("active-work-orders", await openWorkOrders(ctx.orgId), "work_orders (factos)"),
+  "dead-stock-refs": async (ctx) => ok("dead-stock-refs", await noMovementProducts(ctx.orgId, Date.now() - 90 * 86_400_000, 8), "stock_movements (factos)"),
+  "rma-open": async (ctx) => ok("rma-open", await openWorkOrders(ctx.orgId), "work_orders (factos)"),
+  "warranty-expiring": async (ctx) => {
+    const rows = await getDb().prepare(
       `SELECT s.serial_number, p.name, s.warranty_ends_at FROM serials s
        JOIN products p ON p.id = s.product_id
        WHERE s.org_id = ? AND s.status = 'sold' AND s.warranty_ends_at IS NOT NULL
@@ -329,15 +330,15 @@ const FETCHERS: Record<string, Fetcher> = {
     ).all(ctx.orgId, Date.now(), Date.now() + 30 * 86_400_000);
     return ok("warranty-expiring", rows, "serials (factos)");
   },
-  "today-agenda": (ctx) => {
-    const branchId = ctx.branchId ?? defaultBranch(ctx.orgId);
+  "today-agenda": async (ctx) => {
+    const branchId = ctx.branchId ?? await defaultBranch(ctx.orgId);
     const day = dayBounds(ctx.tz, Date.now(), 0);
-    return ok("today-agenda", agendaForDay(ctx.orgId, branchId, day.start, day.end), "appointments (factos)");
+    return ok("today-agenda", await agendaForDay(ctx.orgId, branchId, day.start, day.end), "appointments (factos)");
   },
-  "occupancy-by-staff": (ctx) => {
-    const branchId = ctx.branchId ?? defaultBranch(ctx.orgId);
+  "occupancy-by-staff": async (ctx) => {
+    const branchId = ctx.branchId ?? await defaultBranch(ctx.orgId);
     const day = dayBounds(ctx.tz, Date.now(), 0);
-    const rows = getDb().prepare(
+    const rows = await getDb().prepare(
       `SELECT sr.name, COUNT(a.id) appointments, COALESCE(SUM(a.duration_min),0) minutes
        FROM service_resources sr
        LEFT JOIN appointments a ON a.resource_id = sr.id AND a.starts_at >= ? AND a.starts_at < ? AND a.status NOT IN ('cancelled','no_show')
@@ -346,34 +347,34 @@ const FETCHERS: Record<string, Fetcher> = {
     ).all(day.start, day.end, ctx.orgId, branchId);
     return ok("occupancy-by-staff", rows, "appointments (factos)");
   },
-  "revenue-by-staff": (ctx) => ok("revenue-by-staff", revenueByStaff(ctx.orgId, { from: ctx.from, to: ctx.to }), "appointments (factos)"),
-  "no-shows": (ctx) => ok("no-shows", noShowStats(ctx.orgId, { from: ctx.from, to: ctx.to }), "appointments (factos)"),
-  "alerts-feed": (ctx) => {
-    const rows = getDb().prepare(
+  "revenue-by-staff": async (ctx) => ok("revenue-by-staff", await revenueByStaff(ctx.orgId, { from: ctx.from, to: ctx.to }), "appointments (factos)"),
+  "no-shows": async (ctx) => ok("no-shows", await noShowStats(ctx.orgId, { from: ctx.from, to: ctx.to }), "appointments (factos)"),
+  "alerts-feed": async (ctx) => {
+    const rows = await getDb().prepare(
       `SELECT id, kind, severity, title, body, created_at, read_at FROM notifications
        WHERE org_id = ? ORDER BY created_at DESC LIMIT 8`,
     ).all(ctx.orgId);
     return ok("alerts-feed", rows, "notifications (factos)");
   },
-  "ai-daily-brief": (ctx) =>
-    ok("ai-daily-brief", dailyBrief(ctx.orgId, ctx.branchId), "motor determinístico sobre dados reais"),
-  "anomalies": (ctx) =>
-    ok("anomalies", detectAnomalies(ctx.orgId), "z-score sobre vendas diárias (28 dias)"),
+  "ai-daily-brief": async (ctx) =>
+    ok("ai-daily-brief", await dailyBrief(ctx.orgId, ctx.branchId), "motor determinístico sobre dados reais"),
+  "anomalies": async (ctx) =>
+    ok("anomalies", await detectAnomalies(ctx.orgId), "z-score sobre vendas diárias (28 dias)"),
 };
 
-function defaultBranch(orgId: string): string {
-  const row = getDb()
+async function defaultBranch(orgId: string): Promise<string> {
+  const row = (await getDb()
     .prepare(`SELECT id FROM branches WHERE org_id = ? ORDER BY is_default DESC, code LIMIT 1`)
-    .get(orgId) as { id: string } | undefined;
+    .get(orgId)) as { id: string } | undefined;
   if (!row) throw new Error("Organização sem filiais.");
   return row.id;
 }
 
 /** Fetches payloads for a set of widgets (used by the dashboard RSC). */
-export function fetchWidgets(
+export async function fetchWidgets(
   widgetIds: string[],
   orgId: string,
   opts: { branchId?: string; period?: PeriodKey } = {},
-): WidgetPayload[] {
-  return widgetIds.map((id) => fetchWidgetData(id, orgId, opts));
+): Promise<WidgetPayload[]> {
+  return Promise.all(widgetIds.map((id) => fetchWidgetData(id, orgId, opts)));
 }

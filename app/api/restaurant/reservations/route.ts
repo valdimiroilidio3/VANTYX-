@@ -18,7 +18,7 @@ export const GET = routeHandler(async (_body, request) => {
   const start = new Date(day);
   start.setUTCHours(0, 0, 0, 0);
   const end = start.getTime() + 86_400_000;
-  return { reservations: listReservations(ctx.orgId, branchId, start.getTime(), end) };
+  return { reservations: await listReservations(ctx.orgId, branchId, start.getTime(), end) };
 });
 
 const schema = z.discriminatedUnion("action", [
@@ -44,7 +44,7 @@ export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("restaurant.reservations");
   if (body.action === "create") {
     const { action: _a, ...data } = body;
-    return { reservationId: createReservation(ctx.orgId, data) };
+    return { reservationId: await createReservation(ctx.orgId, data) };
   }
   return setReservationStatus(ctx.orgId, body.reservationId, body.status);
 }, schema);

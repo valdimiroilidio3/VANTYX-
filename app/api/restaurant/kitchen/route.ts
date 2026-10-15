@@ -24,6 +24,6 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("restaurant.kitchen");
-  updateTicketStatus(ctx.orgId, body.ticketId, body.status);
+  await updateTicketStatus(ctx.orgId, body.ticketId, body.status);
   return { updated: body.ticketId };
 }, schema);

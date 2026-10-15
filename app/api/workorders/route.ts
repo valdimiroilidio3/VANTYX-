@@ -40,6 +40,6 @@ const createSchema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("workorders.manage");
-  const id = createWorkOrder(ctx.orgId, body, { userId: ctx.userId, label: ctx.userName });
+  const id = await createWorkOrder(ctx.orgId, body, { userId: ctx.userId, label: ctx.userName });
   return NextResponse.json({ ok: true, data: { id } }, { status: 201 });
 }, createSchema);

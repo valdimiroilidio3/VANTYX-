@@ -17,5 +17,5 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("products.manage");
-  return { categoryId: createCategory(ctx.orgId, body) };
+  return { categoryId: await createCategory(ctx.orgId, body) };
 }, schema);

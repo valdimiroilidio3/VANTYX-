@@ -8,20 +8,20 @@ export const dynamic = "force-dynamic";
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("settings.view");
   const db = getDb();
-  const series = db
+  const series = await db
     .prepare(
       `SELECT *, (next_number - 1) as issued_count FROM document_series
        WHERE org_id = ? ORDER BY fiscal_year DESC, doc_type, prefix`,
     )
     .all(ctx.orgId);
-  const lastDocuments = db
+  const lastDocuments = await db
     .prepare(
       `SELECT document_number, status, total_cents, created_at, hash, prev_hash, atcud
        FROM sales WHERE org_id = ? AND document_number IS NOT NULL
        ORDER BY created_at DESC LIMIT 10`,
     )
     .all(ctx.orgId);
-  const creditNotes = db
+  const creditNotes = await db
     .prepare(
       `SELECT document_number, total_cents, created_at, hash FROM returns
        WHERE org_id = ? ORDER BY created_at DESC LIMIT 10`,
@@ -49,9 +49,9 @@ export const POST = routeHandler(async (body) => {
   const db = getDb();
   const currentYear = new Date().getFullYear();
   if (body.fiscalYear <= currentYear) {
-    const existing = db
+    const existing = (await db
       .prepare(`SELECT next_number FROM document_series WHERE org_id = ? AND doc_type = ? AND fiscal_year = ?`)
-      .get(ctx.orgId, body.docType, body.fiscalYear) as { next_number: number } | undefined;
+      .get(ctx.orgId, body.docType, body.fiscalYear)) as { next_number: number } | undefined;
     if (existing && existing.next_number > 1) {
       return {
         error: "Série em uso num ano iniciado não pode ser alterada (integridade da numeração sequencial).",
@@ -59,7 +59,7 @@ export const POST = routeHandler(async (body) => {
     }
   }
   const { newId } = await import("@/lib/domain/ids");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO document_series (id, org_id, doc_type, prefix, fiscal_year, next_number)
      VALUES (?, ?, ?, ?, ?, 1)
      ON CONFLICT(org_id, doc_type, prefix, fiscal_year) DO NOTHING`,

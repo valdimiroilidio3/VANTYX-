@@ -9,7 +9,7 @@ export default async function RootPage() {
   if (!ctx) {
     // No session: show onboarding when the platform has no organizations yet
     const orgCount = (
-      getDb().prepare(`SELECT COUNT(*) c FROM organizations`).get() as { c: number }
+      (await getDb().prepare(`SELECT COUNT(*) c FROM organizations`).get()) as { c: number }
     ).c;
     redirect(orgCount === 0 ? "/onboarding" : "/login");
   }

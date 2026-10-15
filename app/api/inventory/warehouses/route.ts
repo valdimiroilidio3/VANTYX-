@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 /** Warehouse list for inventory staff (no settings permission needed). */
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("inventory.view");
-  return listWarehouses(ctx.orgId).map((w) => ({
+  return (await listWarehouses(ctx.orgId)).map((w) => ({
     id: w.id,
     name: w.name,
     code: w.code,

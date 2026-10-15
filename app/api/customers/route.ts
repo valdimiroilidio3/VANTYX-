@@ -35,7 +35,7 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("customers.manage");
-  const customerId = createCustomer(ctx.orgId, body, {
+  const customerId = await createCustomer(ctx.orgId, body, {
     userId: ctx.userId,
     label: ctx.userName,
   });

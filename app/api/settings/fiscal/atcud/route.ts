@@ -26,17 +26,17 @@ const schema = z.object({
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("fiscal.manage");
   const db = getDb();
-  const series = db
+  const series = (await db
     .prepare(`SELECT id, doc_type, prefix, fiscal_year FROM document_series WHERE id = ? AND org_id = ?`)
-    .get(body.seriesId, ctx.orgId) as { id: string; doc_type: string; prefix: string; fiscal_year: number } | undefined;
+    .get(body.seriesId, ctx.orgId)) as { id: string; doc_type: string; prefix: string; fiscal_year: number } | undefined;
   if (!series) return { error: "Série não encontrada." };
 
-  tx(db, () => {
-    db.prepare(`UPDATE document_series SET atcud_validation_code = ? WHERE id = ?`).run(
+  await tx(db, async () => {
+    await db.prepare(`UPDATE document_series SET atcud_validation_code = ? WHERE id = ?`).run(
       body.code,
       body.seriesId,
     );
-    writeAudit({
+    await writeAudit({
       orgId: ctx.orgId,
       actorUserId: ctx.userId,
       actorLabel: ctx.userName,

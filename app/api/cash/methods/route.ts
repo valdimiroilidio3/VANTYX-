@@ -14,6 +14,6 @@ const schema = z.object({ methodId: z.string().min(1), enabled: z.boolean() });
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("settings.manage");
-  setPaymentMethodEnabled(ctx.orgId, body.methodId, body.enabled);
+  await setPaymentMethodEnabled(ctx.orgId, body.methodId, body.enabled);
   return listPaymentMethods(ctx.orgId);
 }, schema);

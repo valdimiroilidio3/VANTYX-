@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("users.manage");
   return {
-    users: listUsers(ctx.orgId),
+    users: await listUsers(ctx.orgId),
     roleTemplates: ROLE_TEMPLATES.map((r) => ({ key: r.key, name: r.name, description: r.description })),
   };
 });
@@ -25,6 +25,6 @@ const createSchema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("users.manage");
-  const userId = createUser(ctx.orgId, body, { userId: ctx.userId, label: ctx.userName });
+  const userId = await createUser(ctx.orgId, body, { userId: ctx.userId, label: ctx.userName });
   return { userId };
 }, createSchema);

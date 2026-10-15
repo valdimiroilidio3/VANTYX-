@@ -15,10 +15,10 @@ import { writeAudit } from "./audit.service";
  * execution logs.
  */
 
-export function listRules(orgId: string): BusinessRule[] {
-  const rows = getDb()
+export async function listRules(orgId: string): Promise<BusinessRule[]> {
+  const rows = (await getDb()
     .prepare(`SELECT * FROM business_rules WHERE org_id = ? ORDER BY priority, key`)
-    .all(orgId) as {
+    .all(orgId)) as {
     id: string;
     key: string;
     name: string;
@@ -53,18 +53,18 @@ export interface RuleInput {
   enabled?: boolean;
 }
 
-export function createRule(
+export async function createRule(
   orgId: string,
   input: RuleInput,
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const errors = validateRuleShape({ condition: input.condition, action: input.action });
   if (errors.length) badRequest(errors.join("; "));
   if (!input.key?.trim() || !input.name?.trim()) badRequest("Chave e nome são obrigatórios.");
   const db = getDb();
   const id = newId("rule");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO business_rules (id, org_id, key, name, description, scope, condition, action, priority, enabled, created_by, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
@@ -73,7 +73,7 @@ export function createRule(
       JSON.stringify(input.action), input.priority ?? 100,
       input.enabled === false ? 0 : 1, actor.userId, Date.now(), Date.now(),
     );
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "rule.create", resourceType: "business_rule", resourceId: id, after: input },
       db,
     );
@@ -81,21 +81,21 @@ export function createRule(
   return id;
 }
 
-export function updateRule(
+export async function updateRule(
   orgId: string,
   ruleId: string,
   patch: Partial<RuleInput>,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const before = db.prepare(`SELECT * FROM business_rules WHERE id = ? AND org_id = ?`).get(ruleId, orgId) as Record<string, unknown> | undefined;
+  const before = (await db.prepare(`SELECT * FROM business_rules WHERE id = ? AND org_id = ?`).get(ruleId, orgId)) as Record<string, unknown> | undefined;
   if (!before) notFound("Regra");
   const mergedCondition = (patch.condition ?? JSON.parse(String(before!.condition))) as RuleConditionGroup;
   const mergedAction = (patch.action ?? JSON.parse(String(before!.action))) as RuleAction;
   const errors = validateRuleShape({ condition: mergedCondition, action: mergedAction });
   if (errors.length) badRequest(errors.join("; "));
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `UPDATE business_rules SET
         name = COALESCE(?, name), description = COALESCE(?, description),
         scope = COALESCE(?, scope), condition = ?, action = ?,
@@ -109,27 +109,27 @@ export function updateRule(
       patch.enabled === undefined ? null : patch.enabled ? 1 : 0,
       Date.now(), ruleId, orgId,
     );
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "rule.update", resourceType: "business_rule", resourceId: ruleId, before, after: patch },
       db,
     );
   });
 }
 
-export function setRuleEnabled(orgId: string, ruleId: string, enabled: boolean, actor: { userId: string; label: string }): void {
+export async function setRuleEnabled(orgId: string, ruleId: string, enabled: boolean, actor: { userId: string; label: string }): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    db.prepare(`UPDATE business_rules SET enabled = ?, updated_at = ? WHERE id = ? AND org_id = ?`)
+  await tx(db, async () => {
+    await db.prepare(`UPDATE business_rules SET enabled = ?, updated_at = ? WHERE id = ? AND org_id = ?`)
       .run(enabled ? 1 : 0, Date.now(), ruleId, orgId);
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: enabled ? "rule.enable" : "rule.disable", resourceType: "business_rule", resourceId: ruleId },
       db,
     );
   });
 }
 
-export function listRuleExecutions(orgId: string, limit = 50) {
-  return getDb()
+export async function listRuleExecutions(orgId: string, limit = 50) {
+  return await getDb()
     .prepare(
       `SELECT re.*, r.name as rule_name, r.key as rule_key
        FROM rule_executions re JOIN business_rules r ON r.id = re.rule_id
@@ -140,8 +140,8 @@ export function listRuleExecutions(orgId: string, limit = 50) {
 
 /* ------------------------------ Approvals ------------------------------ */
 
-export function listApprovals(orgId: string, status?: "pending" | "approved" | "rejected") {
-  return getDb()
+export async function listApprovals(orgId: string, status?: "pending" | "approved" | "rejected") {
+  return await getDb()
     .prepare(
       `SELECT a.*, u.name as requested_by_name, d.name as decided_by_name
        FROM approvals a
@@ -153,23 +153,23 @@ export function listApprovals(orgId: string, status?: "pending" | "approved" | "
     .all(...(status ? [orgId, status] : [orgId]));
 }
 
-export function decideApproval(
+export async function decideApproval(
   orgId: string,
   approvalId: string,
   decision: "approved" | "rejected",
   reason: string | undefined,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    const approval = db.prepare(`SELECT * FROM approvals WHERE id = ? AND org_id = ?`).get(approvalId, orgId) as { id: string; status: string; kind: string; ref_id: string | null } | undefined;
+  await tx(db, async () => {
+    const approval = (await db.prepare(`SELECT * FROM approvals WHERE id = ? AND org_id = ?`).get(approvalId, orgId)) as { id: string; status: string; kind: string; ref_id: string | null } | undefined;
     if (!approval) notFound("Aprovação");
     if (approval!.status !== "pending") badRequest("Aprovação já decidida.");
-    db.prepare(`UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, reason = ? WHERE id = ?`)
+    await db.prepare(`UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, reason = ? WHERE id = ?`)
       .run(decision, actor.userId, Date.now(), reason ?? null, approvalId);
     if (approval!.kind === "purchase" && approval!.ref_id) {
       // Keep the purchasing workflow consistent with the decision
-      db.prepare(
+      await db.prepare(
         `UPDATE purchase_orders SET status = ?, approved_by = ?, approved_at = ?, requires_approval = 0, updated_at = ?
          WHERE id = ? AND org_id = ? AND status = 'pending_approval'`,
       ).run(
@@ -181,7 +181,7 @@ export function decideApproval(
         orgId,
       );
     }
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: `approval.${decision}`, resourceType: "approval", resourceId: approvalId, after: { reason: reason ?? null } },
       db,
     );

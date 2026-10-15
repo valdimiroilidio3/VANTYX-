@@ -9,11 +9,7 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
-# better-sqlite3 compila a partir do código (node-gyp) — ferramentas necessárias
-RUN apt-get update -y \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-
+# @libsql/client é pure-JS/WASM — sem ferramentas de compilação nativa
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -33,8 +29,8 @@ ENV VANTYX_DB_PATH=/data/vantyx.db
 RUN mkdir -p /data && chown -R node:node /data
 USER node
 
-# node_modules completo (inclui better-sqlite3 compilado no mesmo OS/ABI
-# e tsx para os scripts de migração/seed correrem dentro do contentor)
+# node_modules completo (inclui tsx para os scripts de migração/seed
+# correrem dentro do contentor)
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=node:node /app/public ./public

@@ -10,7 +10,7 @@ export const GET = routeHandler(async (_body, request) => {
   const ctx = await requirePermission("inventory.waste");
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
-  return getDb()
+  return await getDb()
     .prepare(
       `SELECT w.*, p.name as product_name, wh.name as warehouse_name, u.name as user_name
        FROM waste_records w
@@ -33,7 +33,7 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("inventory.waste");
-  recordWaste(ctx.orgId, {
+  await recordWaste(ctx.orgId, {
     ...body,
     actor: { userId: ctx.userId, label: ctx.userName },
   });

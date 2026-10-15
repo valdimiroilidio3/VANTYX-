@@ -63,7 +63,7 @@ const createSchema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("products.manage");
-  const productId = createProduct(
+  const productId = await createProduct(
     ctx.orgId,
     body,
     { userId: ctx.userId, label: ctx.userName },

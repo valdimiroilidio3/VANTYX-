@@ -48,9 +48,9 @@ function scrub(value: unknown): unknown {
   return out;
 }
 
-export function writeAudit(entry: AuditEntry, db: Db = getDb()): string {
+export async function writeAudit(entry: AuditEntry, db: Db = getDb()): Promise<string> {
   const id = newId("aud");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO audit_logs
       (id, org_id, actor_user_id, actor_label, action, resource_type, resource_id,
        branch_id, before, after, result, detail, ip, user_agent, created_at)
@@ -86,7 +86,7 @@ export interface AuditQuery {
   offset?: number;
 }
 
-export function queryAudit(q: AuditQuery) {
+export async function queryAudit(q: AuditQuery) {
   const db = getDb();
   const where: string[] = ["org_id = ?"];
   const params: (string | number)[] = [q.orgId];
@@ -112,7 +112,7 @@ export function queryAudit(q: AuditQuery) {
   }
   const limit = Math.min(q.limit ?? 50, 200);
   const offset = q.offset ?? 0;
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT id, actor_user_id, actor_label, action, resource_type, resource_id,
               branch_id, result, detail, created_at
@@ -121,9 +121,9 @@ export function queryAudit(q: AuditQuery) {
     )
     .all(...params, limit, offset);
   const total = (
-    db
+    (await db
       .prepare(`SELECT COUNT(*) c FROM audit_logs WHERE ${where.join(" AND ")}`)
-      .get(...params) as { c: number }
+      .get(...params)) as { c: number }
   ).c;
   return { rows, total };
 }

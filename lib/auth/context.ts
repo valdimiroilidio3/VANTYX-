@@ -47,52 +47,52 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   return getAuthContextFromToken(token);
 }
 
-export function getAuthContextFromToken(token: string): AuthContext | null {
+export async function getAuthContextFromToken(token: string): Promise<AuthContext | null> {
   const db = getDb();
-  const session = db
+  const session = (await db
     .prepare(
       `SELECT s.id, s.org_id, s.user_id, s.expires_at, s.revoked_at
        FROM sessions s WHERE s.token_hash = ?`,
     )
-    .get(sha256(token)) as SessionRow | undefined;
+    .get(sha256(token))) as SessionRow | undefined;
   if (!session) return null;
   const now = Date.now();
   if (session.revoked_at || session.expires_at < now) return null;
 
-  const user = db
+  const user = (await db
     .prepare(
       `SELECT id, org_id, email, name, status, role_id FROM users WHERE id = ?`,
     )
-    .get(session.user_id) as UserRow | undefined;
+    .get(session.user_id)) as UserRow | undefined;
   if (!user || user.status !== "active") return null;
 
-  const org = db
+  const org = (await db
     .prepare(`SELECT name, demo FROM organizations WHERE id = ? AND status = 'active'`)
-    .get(user.org_id) as { name: string; demo: number } | undefined;
+    .get(user.org_id)) as { name: string; demo: number } | undefined;
   if (!org) return null;
 
-  const profile = db
+  const profile = (await db
     .prepare(`SELECT industry FROM org_profiles WHERE org_id = ?`)
-    .get(user.org_id) as { industry: IndustryKey } | undefined;
+    .get(user.org_id)) as { industry: IndustryKey } | undefined;
 
   const role = user.role_id
-    ? (db
+    ? ((await db
         .prepare(`SELECT key, name FROM roles WHERE id = ?`)
-        .get(user.role_id) as { key: string; name: string } | undefined)
+        .get(user.role_id)) as { key: string; name: string } | undefined)
     : undefined;
 
   const perms = user.role_id
-    ? (db
+    ? ((await db
         .prepare(`SELECT permission FROM role_permissions WHERE role_id = ?`)
-        .all(user.role_id) as { permission: Permission }[])
+        .all(user.role_id)) as { permission: Permission }[])
     : [];
 
-  const branches = db
+  const branches = (await db
     .prepare(`SELECT branch_id FROM user_branches WHERE user_id = ?`)
-    .all(user.id) as { branch_id: string }[];
+    .all(user.id)) as { branch_id: string }[];
 
   // Touch last_seen (cheap, keeps session activity auditable)
-  db.prepare(`UPDATE sessions SET last_seen_at = ? WHERE id = ?`).run(
+  await db.prepare(`UPDATE sessions SET last_seen_at = ? WHERE id = ?`).run(
     now,
     session.id,
   );

@@ -1,169 +1,120 @@
 # VANTYX® — Guia de Lançamento (Deployment)
 
-> **Data:** 2026-10-15 · **Modo de produção validado localmente:** `next build` +
-> `next start` → login, dashboard, POS, definições fiscais e exportação SAF-T
-> todos 200 OK. A app está pronta para qualquer servidor com **disco persistente**
-> e processo Node permanente (VPS, Fly.io, Railway, Render, Docker, máquina local).
+> **Data:** 2026-10-15 · A camada de dados usa **libSQL** (`@libsql/client`):
+> em produção/serverless liga a uma base **Turso** remota; em desenvolvimento
+> usa um ficheiro SQLite local. Build de produção, testes (67/67) e smoke
+> completo validados após a migração.
 
 ---
 
-## ⚠️ Vercel — porque NÃO funciona com a arquitetura atual
+## ✅ Opção A (recomendada para cloud) — Vercel + Turso
 
-A Vercel é uma plataforma **serverless**: cada request corre numa função efémera
-com sistema de ficheiros **read-only** (apenas `/tmp` gravável, apagado entre
-invocações/instâncias). O VANTYX usa **SQLite local** (`better-sqlite3`, WAL,
-transações `BEGIN IMMEDIATE`, API síncrona) — pelo que, na Vercel:
+A app é compatível com serverless: nenhum dado depende do sistema de
+ficheiros; a BD vive no Turso (libSQL gerido, plano gratuito suficiente para
+começar).
 
-1. O ficheiro `data/vantyx.db` **não existe** no deployment (dados operacionais
-   nunca são commitados — `.gitignore`);
-2. Mesmo que fosse commitado, **não há como gravar**: cada venda/checkout
-   falharia ou perder-se-ia no próximo cold start;
-3. Multi-instância/regiões divergiriam (cada função teria a sua cópia).
-
-Isto violaria o requisito n.º 1 da plataforma — **integridade dos dados** — e é
-incompatível com documentos fiscais (a cadeia de hashes exige base única e
-durável). **Não faça deploy na Vercel sem migrar a base de dados.**
-
-### O que seria preciso para a Vercel (opção B — migração)
-
-| Passo | Trabalho |
-|---|---|
-| Base de dados externa | **Turso/libSQL** (SQL quase idêntico ao SQLite) ou Postgres (Neon/Vercel Postgres) |
-| Camada de dados | `lib/db/client.ts` + todos os serviços passam de API **síncrona** (better-sqlite3) para **assíncrona** — refactor grande e transversal (`db.prepare().get()` → `await`) |
-| Transações | `BEGIN IMMEDIATE` → transações interativas do driver escolhido |
-| Testes | Os 67 testes atuais correm contra SQLite em memória — teriam de acompanhar |
-| Deploy | Import do repo GitHub na Vercel (build já passa: `next.config.ts` sem dependências de FS em runtime, exceto a BD) |
-
-Estimativa: vários dias de trabalho. Só avançar se o destino for mesmo
-serverless. Alternativa pragmática: **VPS/Fly.io com o Dockerfile incluído**
-(opção A) — zero alterações de código.
-
----
-
-## ✅ Opção A (recomendada) — Docker em VPS / Fly.io / Railway / Render
-
-O repositório inclui `Dockerfile` (multi-stage, Node 22, better-sqlite3
-compilado no build) e `docker-compose.yml` (volume persistente `vantyx-data`
-montado em `/data`).
-
-> Nota: o Dockerfile segue o padrão oficial Next.js multi-stage; não foi
-> possível testar o `docker build` no sandbox de desenvolvimento (Docker
-> indisponível) — o modo de produção foi validado com `next start` diretamente.
-
-### A.1 — VPS (Hetzner, DigitalOcean, OVH, …) ou máquina própria
+### 1. Criar a base de dados (conta Turso — gratuita)
 
 ```bash
-# no servidor (Docker + Compose instalados)
-git clone https://github.com/valdimiroilidio3/VANTYX-.git vantyx
-cd vantyx && git checkout arena/954058e6-vantyx   # ou main, quando feito merge
-docker compose up -d --build
-
-# opcional: dados de demonstração (só em modo demo!)
-docker compose exec vantyx npm run seed:demo
+# instalar CLI (ver https://docs.turso.tech)
+curl -sSfL https://get.tur.so/install.sh | bash
+turso auth signup            # criar conta
+turso db create vantyx       # criar base
+turso db show vantyx --url   # → libsql://vantyx-<user>.turso.io
+turso db tokens create vantyx --authorization write
 ```
 
-A app fica em `http://IP:3000`. **Coloque HTTPS à frente** (obrigatório — os
-cookies de sessão são `Secure` em produção):
+Guarda: **URL** (`libsql://...`) e **TOKEN** (write).
 
-- **Caddy** (mais simples): `caddy reverse-proxy --from seudominio.pt --to localhost:3000`
-- **Nginx + certbot**: configuração habitual de reverse proxy + Let's Encrypt.
-
-### A.2 — Fly.io (volume persistente)
+### 2. Aplicar as migrações na base remota (a partir da tua máquina)
 
 ```bash
-fly launch --no-deploy --copy-config   # gera fly.toml a partir do Dockerfile
-fly volumes create vantyx_data --size 1 --region mad   # região à escolha
-fly deploy
-```
-
-`fly.toml` mínimo:
-
-```toml
-app = "vantyx"
-primary_region = "mad"
-
-[build]
-  dockerfile = "Dockerfile"
-
-[mounts]
-  source = "vantyx_data"
-  destination = "/data"
-
-[env]
-  NODE_ENV = "production"
-  VANTYX_DB_PATH = "/data/vantyx.db"
-
-[http_service]
-  internal_port = 3000
-  force_https = true
-  auto_stop_machines = false      # importante: single-instância com SQLite
-  auto_start_machines = true
-
-[[vm]]
-  memory = "1gb"
-  cpu_kind = "shared"
-  cpus = 1
-```
-
-**Mantenha 1 única máquina/instância** (SQLite local não é multi-nó).
-
-### A.3 — Railway / Render
-
-- Railway: novo projeto a partir do repo → deteta o Dockerfile → adicionar
-  **Volume** montado em `/data` → variável `VANTYX_DB_PATH=/data/vantyx.db`.
-- Render: novo **Web Service** (Docker) → **Persistent Disk** montado em
-  `/data` → mesma variável de ambiente.
-
----
-
-## ✅ Opção C — Servidor local / LAN (sem cloud)
-
-```bash
+git clone https://github.com/valdimiroilidio3/VANTYX-.git && cd VANTYX-
 npm ci
-npm run build
-npm start            # http://localhost:3000
-# primeira vez (opcional): npm run seed:demo
+TURSO_DATABASE_URL="libsql://vantyx-<user>.turso.io" \
+TURSO_AUTH_TOKEN="<token>" \
+  npm run db:migrate
 ```
 
-Para acesso LAN: a app já escuta em `0.0.0.0`. HTTPS local via Caddy/Traefik
-recomendado (cookies `Secure`). Ideal para loja única.
+### 3. Deploy na Vercel
+
+1. [vercel.com/new](https://vercel.com/new) → importar o repositório
+   `valdimiroilidio3/VANTYX-` → branch `arena/954058e6-vantyx` (ou `main`
+   após merge).
+2. Framework: Next.js (detetado automaticamente). Sem configuração extra.
+3. **Environment Variables** (Settings → Environment Variables):
+   - `TURSO_DATABASE_URL` = `libsql://vantyx-<user>.turso.io`
+   - `TURSO_AUTH_TOKEN` = token de escrita
+   - (opcional) `VANTYX_LLM_API_KEY` para o assistente IA
+4. Deploy. Ao abrir, criar a organização em **/onboarding** ("Criar
+   organização" na página de login).
+
+### Notas Vercel
+
+- **Região:** escolhe uma região Vercel próxima da região Turso (a latência
+  por query é o custo do serverless; a app faz várias queries por request).
+- **1 instância ≠ problema:** ao contrário do SQLite local, o Turso é
+  multi-cliente — várias funções/regions podem escrever em concorrência
+  (transações geridas pelo servidor).
+- **Tokens:** nunca commitar; só em env vars da Vercel (secret).
+- **Seed demo na remota:** `TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... npm run seed:demo`
+  (apenas para avaliação — dados demo ficam na mesma base; em produção real,
+  não usar).
+
+---
+
+## ✅ Opção B — Docker em VPS / Fly.io / Railway / Render
+
+Para quem prefere disco próprio (um único ficheiro SQLite local, sem serviço
+externo). O `Dockerfile` (multi-stage, Node 22, sem compilação nativa) e
+`docker-compose.yml` (volume `vantyx-data` em `/data`) estão no repositório.
+
+```bash
+git clone https://github.com/valdimiroilidio3/VANTYX-.git vantyx && cd vantyx
+docker compose up -d --build
+# dados demo (opcional): docker compose exec vantyx npm run seed:demo
+```
+
+Sem `TURSO_DATABASE_URL`, a app usa `VANTYX_DB_PATH` (no container:
+`/data/vantyx.db`). **HTTPS à frente é obrigatório** (cookies `Secure` em
+produção): Caddy `reverse-proxy --from seudominio.pt --to localhost:3000`
+ou Nginx+certbot. Fly.io/Railway/Render: montar volume/disco em `/data`
+(exemplo `fly.toml` no histórico deste guia; single instance com SQLite local).
+
+## ✅ Opção C — Servidor local / LAN
+
+```bash
+npm ci && npm run build && npm start   # http://localhost:3000
+```
 
 ---
 
 ## Variáveis de ambiente
 
-| Variável | Obrigatória | Descrição |
-|---|---|---|
-| `VANTYX_DB_PATH` | Não (default `data/vantyx.db`) | Caminho absoluto do ficheiro SQLite. Em Docker: `/data/vantyx.db` |
-| `NODE_ENV` | Sim em produção | `production` ativa cookies `Secure` (HTTPS obrigatório) |
-| `VANTYX_LLM_API_KEY` | Não | Ativa o assistente IA (sem chave = estado honesto `not_configured`) |
-| `VANTYX_LLM_MODEL` / `VANTYX_LLM_BASE_URL` | Não | Modelo/endpoint do assistente |
-
-**Nunca** commitar chaves/segredos (regra do projeto). Não há segredo de
-sessão em env — as sessões vivem na BD (tokens só em SHA-256).
+| Variável | Descrição |
+|---|---|
+| `TURSO_DATABASE_URL` | Base remota libSQL (`libsql://...`). Se definida, tem prioridade |
+| `TURSO_AUTH_TOKEN` | Token de escrita da base Turso |
+| `VANTYX_DB_PATH` | Modo local: caminho do SQLite (default `data/vantyx.db`; `:memory:` para testes) |
+| `NODE_ENV=production` | Ativa cookies `Secure` (HTTPS obrigatório) |
+| `VANTYX_LLM_API_KEY` / `_MODEL` / `_BASE_URL` | Assistente IA (opcional; sem chave = estado honesto `not_configured`) |
 
 ## Migrações, seed e backups
 
-- **Migrações:** aplicadas automaticamente no primeiro acesso à BD
-  (`getDb()` → `ensureMigrations`). Manual: `npm run db:migrate`.
-- **Seed demo:** `npm run seed:demo` — idempotente (ignora orgs demo existentes);
-  cria apenas dados marcados `demo=1`, separados dos reais.
-- **Backups:** copiar o ficheiro da BD de forma atómica:
-  ```bash
-  sqlite3 /data/vantyx.db ".backup '/backups/vantyx-$(date +%F).db'"
-  ```
-  (checkpoint WAL incluído). Cron diário recomendado + teste de restauro.
-- **Atualizações:** `git pull && docker compose up -d --build` — as migrações
-  correm sozinhas no arranque.
+- **Migrações:** aplicadas automaticamente na primeira operação
+  (`getDb().ready()`); manual: `npm run db:migrate` (com as env vars do destino).
+- **Seed demo:** `npm run seed:demo` — idempotente; dados marcados `demo=1`.
+- **Backups (Turso):** `turso db shell <nome> ".dump" > backup-$(date +%F).sql`
+  ou criar base secundária/pitr conforme plano. **Backups (local):**
+  `sqlite3 data/vantyx.db ".backup 'backups/vantyx-$(date +%F).db'"`.
 
 ## Checklist de segurança pós-deploy
 
-1. HTTPS ativo (cookies são `Secure` em produção — sem HTTPS o login falha).
-2. Criar a organização real via `/onboarding` (link "Criar organização" no login).
+1. HTTPS ativo (cookies `Secure` — sem HTTPS o login falha em produção).
+2. Criar a organização real via `/onboarding`.
 3. Preencher NIF real + região fiscal em Definições → Fiscal (QR Code só emite
    com NIF; ATCUD só com código atribuído pela AT).
-4. Criar utilizadores mínimos necessários (papéis em Definições → Equipa);
-   todas as permissões são verificadas no servidor.
-5. Backup automático da BD (ver acima) + monitorização de disco.
-6. **Estado fiscal:** o software NÃO é certificado pela AT — candidatura e
-   passos em `docs/CERTIFICACAO-AT.md`.
+4. Utilizadores mínimos necessários; permissões verificadas no servidor.
+5. Backups automáticos + teste de restauro.
+6. **Estado fiscal:** software NÃO certificado pela AT — candidatura e passos
+   em `docs/CERTIFICACAO-AT.md`.

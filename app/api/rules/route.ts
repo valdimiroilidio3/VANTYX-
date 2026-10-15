@@ -15,10 +15,10 @@ export const GET = routeHandler(async (_body, request) => {
   const ctx = await requirePermission("rules.manage");
   const url = new URL(request.url);
   if (url.searchParams.get("view") === "executions") {
-    return { executions: listRuleExecutions(ctx.orgId, 50) };
+    return { executions: await listRuleExecutions(ctx.orgId, 50) };
   }
   return {
-    rules: listRules(ctx.orgId),
+    rules: await listRules(ctx.orgId),
     allowedFields: ALLOWED_FIELDS,
     allowedOperators: ALLOWED_OPERATORS,
   };
@@ -85,8 +85,8 @@ export const POST = routeHandler(async (body) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   if (body.id) {
     const { id, key: _key, ...patch } = body;
-    updateRule(ctx.orgId, id, patch, actor);
+    await updateRule(ctx.orgId, id, patch, actor);
     return { updated: id };
   }
-  return { ruleId: createRule(ctx.orgId, body, actor) };
+  return { ruleId: await createRule(ctx.orgId, body, actor) };
 }, createSchema);

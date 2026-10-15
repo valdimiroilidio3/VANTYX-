@@ -73,18 +73,18 @@ interface ProductRow {
   updated_at: number;
 }
 
-export function createProduct(
+export async function createProduct(
   orgId: string,
   input: ProductInput,
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   validateProductInput(input);
   const db = getDb();
-  assertSkuFree(db, orgId, input.sku);
+  await assertSkuFree(db, orgId, input.sku);
   const productId = newId("prod");
   const now = Date.now();
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO products
         (id, org_id, type, name, description, category_id, sku, base_price_cents, cost_cents,
          tax_rate_bps, unit, sale_mode, track_stock, allow_negative, status, attributes, image_url,
@@ -105,12 +105,12 @@ export function createProduct(
     );
 
     for (const variant of input.variants ?? []) {
-      insertVariant(db, orgId, productId, variant, now);
+      await insertVariant(db, orgId, productId, variant, now);
     }
     for (const barcode of input.barcodes ?? []) {
-      insertBarcode(db, orgId, productId, barcode.code, barcode.variantId ?? null, barcode.embeddedKind ?? null);
+      await insertBarcode(db, orgId, productId, barcode.code, barcode.variantId ?? null, barcode.embeddedKind ?? null);
     }
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "product.create", resourceType: "product", resourceId: productId, after: input },
       db,
     );
@@ -118,16 +118,16 @@ export function createProduct(
   return productId;
 }
 
-function insertVariant(
+async function insertVariant(
   db: ReturnType<typeof getDb>,
   orgId: string,
   productId: string,
   variant: VariantInput,
   now: number,
-): string {
-  assertSkuFree(db, orgId, variant.sku);
+): Promise<string> {
+  await assertSkuFree(db, orgId, variant.sku);
   const id = newId("var");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO product_variants (id, org_id, product_id, sku, label, price_cents, cost_cents, tax_rate_bps, attributes, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
   ).run(
@@ -138,42 +138,42 @@ function insertVariant(
   return id;
 }
 
-function insertBarcode(
+async function insertBarcode(
   db: ReturnType<typeof getDb>,
   orgId: string,
   productId: string,
   code: string,
   variantId: string | null,
   embeddedKind: "price" | "weight" | null,
-): void {
+): Promise<void> {
   const normalized = code.trim();
   if (!normalized) return;
-  const existing = db
+  const existing = (await db
     .prepare(`SELECT product_id FROM barcodes WHERE org_id = ? AND code = ?`)
-    .get(orgId, normalized) as { product_id: string } | undefined;
+    .get(orgId, normalized)) as { product_id: string } | undefined;
   if (existing) {
     throw new ApiError(409, `Código de barras ${normalized} já está atribuído a outro produto.`, "duplicate_barcode");
   }
-  db.prepare(
+  await db.prepare(
     `INSERT INTO barcodes (id, org_id, product_id, variant_id, code, embedded_kind, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(newId("bc"), orgId, productId, variantId, normalized, embeddedKind, Date.now());
 }
 
-export function updateProduct(
+export async function updateProduct(
   orgId: string,
   productId: string,
   patch: Partial<ProductInput> & { imageUrl?: string | null },
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const before = db.prepare(`SELECT * FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId) as ProductRow | undefined;
+  const before = (await db.prepare(`SELECT * FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId)) as ProductRow | undefined;
   if (!before) notFound("Produto");
   if (patch.sku && patch.sku.trim().toUpperCase() !== before!.sku) {
-    assertSkuFree(db, orgId, patch.sku, productId);
+    await assertSkuFree(db, orgId, patch.sku, productId);
   }
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `UPDATE products SET
         name = COALESCE(?, name),
         description = COALESCE(?, description),
@@ -212,23 +212,23 @@ export function updateProduct(
       Date.now(), productId, orgId,
     );
     if (patch.barcodes) {
-      db.prepare(`DELETE FROM barcodes WHERE org_id = ? AND product_id = ?`).run(orgId, productId);
+      await db.prepare(`DELETE FROM barcodes WHERE org_id = ? AND product_id = ?`).run(orgId, productId);
       for (const b of patch.barcodes) {
-        insertBarcode(db, orgId, productId, b.code, b.variantId ?? null, b.embeddedKind ?? null);
+        await insertBarcode(db, orgId, productId, b.code, b.variantId ?? null, b.embeddedKind ?? null);
       }
     }
     if (patch.variants) {
       // Additive sync: existing variants by SKU are kept, new ones inserted.
       const existingSkus = new Set(
-        (db.prepare(`SELECT sku FROM product_variants WHERE org_id = ? AND product_id = ?`).all(orgId, productId) as { sku: string }[]).map((v) => v.sku),
+        ((await db.prepare(`SELECT sku FROM product_variants WHERE org_id = ? AND product_id = ?`).all(orgId, productId)) as { sku: string }[]).map((v) => v.sku),
       );
       for (const variant of patch.variants) {
         if (!existingSkus.has(variant.sku.trim().toUpperCase())) {
-          insertVariant(db, orgId, productId, variant, Date.now());
+          await insertVariant(db, orgId, productId, variant, Date.now());
         }
       }
     }
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "product.update", resourceType: "product", resourceId: productId, before, after: patch },
       db,
     );
@@ -255,22 +255,22 @@ function validateProductInput(input: ProductInput): void {
   }
 }
 
-function assertSkuFree(
+async function assertSkuFree(
   db: ReturnType<typeof getDb>,
   orgId: string,
   sku: string,
   ignoreProductId?: string,
-): void {
+): Promise<void> {
   const normalized = sku.trim().toUpperCase();
-  const product = db
+  const product = (await db
     .prepare(`SELECT id FROM products WHERE org_id = ? AND sku = ?`)
-    .get(orgId, normalized) as { id: string } | undefined;
+    .get(orgId, normalized)) as { id: string } | undefined;
   if (product && product.id !== ignoreProductId) {
     throw new ApiError(409, `SKU ${normalized} já existe noutro produto.`, "duplicate_sku");
   }
-  const variant = db
+  const variant = (await db
     .prepare(`SELECT id FROM product_variants WHERE org_id = ? AND sku = ?`)
-    .get(orgId, normalized) as { id: string } | undefined;
+    .get(orgId, normalized)) as { id: string } | undefined;
   if (variant) {
     throw new ApiError(409, `SKU ${normalized} já existe numa variante.`, "duplicate_sku");
   }
@@ -300,33 +300,33 @@ export interface PosSearchResult {
 }
 
 /** Instant POS search: name, SKU or exact barcode. Server-paginated. */
-export function searchForPos(
+export async function searchForPos(
   orgId: string,
   query: string,
   opts: { branchWarehouseId?: string; limit?: number } = {},
-): PosSearchResult[] {
+): Promise<PosSearchResult[]> {
   const db = getDb();
   const q = query.trim();
   const limit = Math.min(opts.limit ?? 20, 50);
   if (!q) return [];
 
   // Exact barcode first
-  const barcodeRow = db
+  const barcodeRow = (await db
     .prepare(
       `SELECT b.product_id, b.variant_id, b.code FROM barcodes b WHERE b.org_id = ? AND b.code = ?`,
     )
-    .get(orgId, q) as { product_id: string; variant_id: string | null; code: string } | undefined;
+    .get(orgId, q)) as { product_id: string; variant_id: string | null; code: string } | undefined;
 
   const rows = barcodeRow
-    ? (db
+    ? ((await db
         .prepare(
           `SELECT p.*, v.id as v_id, v.label as v_label, v.sku as v_sku, v.price_cents as v_price,
                   v.cost_cents as v_cost, v.tax_rate_bps as v_tax
            FROM products p LEFT JOIN product_variants v ON v.product_id = p.id AND v.id = ?
            WHERE p.org_id = ? AND p.id = ?`,
         )
-        .all(barcodeRow.variant_id, orgId, barcodeRow.product_id) as (ProductRow & VariantCols)[])
-    : (db
+        .all(barcodeRow.variant_id, orgId, barcodeRow.product_id)) as (ProductRow & VariantCols)[])
+    : ((await db
         .prepare(
           `SELECT p.*, v.id as v_id, v.label as v_label, v.sku as v_sku, v.price_cents as v_price,
                   v.cost_cents as v_cost, v.tax_rate_bps as v_tax,
@@ -338,19 +338,19 @@ export function searchForPos(
            ORDER BY CASE WHEN p.sku = ? THEN 0 ELSE 1 END, p.name
            LIMIT ?`,
         )
-        .all(orgId, `%${q}%`, `%${q.toUpperCase()}%`, `%${q}%`, `%${q.toUpperCase()}%`, q.toUpperCase(), limit) as (ProductRow & VariantCols)[]);
+        .all(orgId, `%${q}%`, `%${q.toUpperCase()}%`, `%${q}%`, `%${q.toUpperCase()}%`, q.toUpperCase(), limit)) as (ProductRow & VariantCols)[]);
 
-  return rows.slice(0, limit).map((r) => {
+  return Promise.all(rows.slice(0, limit).map(async (r) => {
     const stock = opts.branchWarehouseId
-      ? (db
+      ? ((await db
           .prepare(
             `SELECT COALESCE(SUM(qty_milli),0) q FROM stock_levels
              WHERE warehouse_id = ? AND product_id = ? AND variant_id IS ?`,
           )
-          .get(opts.branchWarehouseId, r.id, r.v_id ?? null) as { q: number } | undefined)
+          .get(opts.branchWarehouseId, r.id, r.v_id ?? null)) as { q: number } | undefined)
       : null;
     const variantCount = (
-      db.prepare(`SELECT COUNT(*) c FROM product_variants WHERE product_id = ?`).get(r.id) as { c: number }
+      (await db.prepare(`SELECT COUNT(*) c FROM product_variants WHERE product_id = ?`).get(r.id)) as { c: number }
     ).c;
     return {
       productId: r.id,
@@ -372,7 +372,7 @@ export function searchForPos(
       trackBatches: r.track_batches === 1,
       trackSerials: r.track_serials === 1,
     };
-  });
+  }));
 }
 
 type VariantCols = {
@@ -385,16 +385,16 @@ type VariantCols = {
   bc?: string | null;
 };
 
-export function getProductDetail(orgId: string, productId: string) {
+export async function getProductDetail(orgId: string, productId: string) {
   const db = getDb();
-  const product = db.prepare(`SELECT * FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId) as ProductRow | undefined;
+  const product = (await db.prepare(`SELECT * FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId)) as ProductRow | undefined;
   if (!product) notFound("Produto");
-  const variants = db.prepare(`SELECT * FROM product_variants WHERE product_id = ? ORDER BY label`).all(productId);
-  const barcodes = db.prepare(`SELECT * FROM barcodes WHERE product_id = ?`).all(productId);
+  const variants = await db.prepare(`SELECT * FROM product_variants WHERE product_id = ? ORDER BY label`).all(productId);
+  const barcodes = await db.prepare(`SELECT * FROM barcodes WHERE product_id = ?`).all(productId);
   const category = product!.category_id
-    ? db.prepare(`SELECT id, name FROM categories WHERE id = ?`).get(product!.category_id)
+    ? await db.prepare(`SELECT id, name FROM categories WHERE id = ?`).get(product!.category_id)
     : null;
-  const kitItems = db
+  const kitItems = await db
     .prepare(
       `SELECT k.*, p.name as component_name, p.sku as component_sku
        FROM kit_items k JOIN products p ON p.id = k.component_product_id
@@ -404,10 +404,10 @@ export function getProductDetail(orgId: string, productId: string) {
   return { product: product!, variants, barcodes, category, kitItems };
 }
 
-export function listProducts(
+export async function listProducts(
   orgId: string,
   opts: { search?: string; categoryId?: string; status?: string; limit?: number; offset?: number; sort?: string } = {},
-): { rows: ProductRow[]; total: number } {
+): Promise<{ rows: ProductRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -434,17 +434,17 @@ export function listProducts(
   const orderBy = allowedSorts[opts.sort ?? "name"] ?? "name ASC";
   const limit = Math.min(opts.limit ?? 25, 200);
   const offset = opts.offset ?? 0;
-  const rows = db
+  const rows = (await db
     .prepare(`SELECT * FROM products WHERE ${where.join(" AND ")} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset) as ProductRow[];
-  const total = (db.prepare(`SELECT COUNT(*) c FROM products WHERE ${where.join(" AND ")}`).get(...params) as { c: number }).c;
+    .all(...params, limit, offset)) as ProductRow[];
+  const total = ((await db.prepare(`SELECT COUNT(*) c FROM products WHERE ${where.join(" AND ")}`).get(...params)) as { c: number }).c;
   return { rows, total };
 }
 
 /* -------------------------- Categories --------------------------- */
 
-export function listCategories(orgId: string) {
-  return getDb()
+export async function listCategories(orgId: string) {
+  return await getDb()
     .prepare(
       `SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) as product_count,
               parent.name as parent_name
@@ -454,13 +454,13 @@ export function listCategories(orgId: string) {
     .all(orgId);
 }
 
-export function createCategory(
+export async function createCategory(
   orgId: string,
   data: { name: string; parentId?: string | null },
-): string {
+): Promise<string> {
   const db = getDb();
   const id = newId("cat");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO categories (id, org_id, parent_id, name, created_at) VALUES (?, ?, ?, ?, ?)`,
   ).run(id, orgId, data.parentId ?? null, data.name.trim(), Date.now());
   return id;
@@ -468,20 +468,20 @@ export function createCategory(
 
 /* --------------------------- Variants ---------------------------- */
 
-export function addVariant(
+export async function addVariant(
   orgId: string,
   productId: string,
   variant: VariantInput,
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
-  const product = db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId);
+  const product = await db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(productId, orgId);
   if (!product) notFound("Produto");
   let id = "";
-  tx(db, () => {
-    id = insertVariant(db, orgId, productId, variant, Date.now());
-    db.prepare(`UPDATE products SET type = 'variant', updated_at = ? WHERE id = ? AND type = 'simple'`).run(Date.now(), productId);
-    writeAudit(
+  await tx(db, async () => {
+    id = await insertVariant(db, orgId, productId, variant, Date.now());
+    await db.prepare(`UPDATE products SET type = 'variant', updated_at = ? WHERE id = ? AND type = 'simple'`).run(Date.now(), productId);
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "variant.create", resourceType: "product_variant", resourceId: id, after: variant },
       db,
     );
@@ -489,26 +489,26 @@ export function addVariant(
   return id;
 }
 
-export function addBarcode(
+export async function addBarcode(
   orgId: string,
   productId: string,
   code: string,
   variantId: string | null = null,
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => insertBarcode(db, orgId, productId, code, variantId, null));
+  await tx(db, async () => insertBarcode(db, orgId, productId, code, variantId, null));
 }
 
 /* ------------------------------ Kits ------------------------------ */
 
-export function setKitComponents(
+export async function setKitComponents(
   orgId: string,
   productId: string,
   components: { componentProductId: string; componentVariantId?: string | null; qtyMilli: number }[],
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    db.prepare(`DELETE FROM kit_items WHERE org_id = ? AND product_id = ?`).run(orgId, productId);
+  await tx(db, async () => {
+    await db.prepare(`DELETE FROM kit_items WHERE org_id = ? AND product_id = ?`).run(orgId, productId);
     const insert = db.prepare(
       `INSERT INTO kit_items (id, org_id, product_id, component_product_id, component_variant_id, qty_milli)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -517,9 +517,9 @@ export function setKitComponents(
       if (c.componentProductId === productId) {
         throw new ApiError(400, "Um kit não pode conter-se a si próprio.");
       }
-      insert.run(newId("kit"), orgId, productId, c.componentProductId, c.componentVariantId ?? null, c.qtyMilli);
+      await insert.run(newId("kit"), orgId, productId, c.componentProductId, c.componentVariantId ?? null, c.qtyMilli);
     }
-    db.prepare(`UPDATE products SET type = 'composite', updated_at = ? WHERE id = ?`).run(Date.now(), productId);
+    await db.prepare(`UPDATE products SET type = 'composite', updated_at = ? WHERE id = ?`).run(Date.now(), productId);
   });
 }
 
@@ -535,7 +535,7 @@ export interface PromotionInput {
   endsAt?: number | null;
 }
 
-export function createPromotion(orgId: string, input: PromotionInput): string {
+export async function createPromotion(orgId: string, input: PromotionInput): Promise<string> {
   const db = getDb();
   if (input.kind === "quantity_discount") {
     if (!input.params.minQtyMilli || !input.params.discountBps) {
@@ -546,15 +546,15 @@ export function createPromotion(orgId: string, input: PromotionInput): string {
     if (input.params.priceCents == null) badRequest("Preço de período exige priceCents.");
   }
   const id = newId("promo");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO promotions (id, org_id, name, kind, product_id, variant_id, params, starts_at, ends_at, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
   ).run(id, orgId, input.name.trim(), input.kind, input.productId, input.variantId ?? null, JSON.stringify(input.params), input.startsAt ?? null, input.endsAt ?? null, Date.now());
   return id;
 }
 
-export function listPromotions(orgId: string) {
-  return getDb()
+export async function listPromotions(orgId: string) {
+  return await getDb()
     .prepare(
       `SELECT pr.*, p.name as product_name FROM promotions pr
        JOIN products p ON p.id = pr.product_id
@@ -563,8 +563,8 @@ export function listPromotions(orgId: string) {
     .all(orgId);
 }
 
-export function setPromotionStatus(orgId: string, promotionId: string, status: "active" | "paused"): void {
-  getDb()
+export async function setPromotionStatus(orgId: string, promotionId: string, status: "active" | "paused"): Promise<void> {
+  await getDb()
     .prepare(`UPDATE promotions SET status = ? WHERE id = ? AND org_id = ?`)
     .run(status, promotionId, orgId);
 }
@@ -573,21 +573,21 @@ export function setPromotionStatus(orgId: string, promotionId: string, status: "
  * Resolves the best active quantity promotion for a product/variant at a
  * given quantity and time. Period-price promotions override unit price.
  */
-export function resolveActivePromotion(
+export async function resolveActivePromotion(
   db: ReturnType<typeof getDb>,
   orgId: string,
   productId: string,
   variantId: string | null,
   now = Date.now(),
-): { quantity?: { id: string; minQtyMilli: number; discountBps: number }; periodPriceCents?: number; periodPromotionId?: string } | null {
-  const rows = db
+): Promise<{ quantity?: { id: string; minQtyMilli: number; discountBps: number }; periodPriceCents?: number; periodPromotionId?: string } | null> {
+  const rows = (await db
     .prepare(
       `SELECT * FROM promotions
        WHERE org_id = ? AND product_id = ? AND variant_id IS ? AND status = 'active'
          AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)
        ORDER BY priority ASC`,
     )
-    .all(orgId, productId, variantId, now, now) as {
+    .all(orgId, productId, variantId, now, now)) as {
     id: string;
     kind: string;
     params: string;
@@ -630,11 +630,11 @@ export interface CsvImportRowResult {
  * price/cost accept decimal ("1.99"). stock/reorder_point in units.
  * Each row is validated independently; errors never abort valid rows.
  */
-export function importProductsCsv(
+export async function importProductsCsv(
   orgId: string,
   csv: string,
   actor: { userId: string; label: string },
-): { results: CsvImportRowResult[]; created: number; updated: number; errors: number } {
+): Promise<{ results: CsvImportRowResult[]; created: number; updated: number; errors: number }> {
   const db = getDb();
   const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) badRequest("CSV vazio ou sem linhas de dados.");
@@ -669,23 +669,23 @@ export function importProductsCsv(
       let categoryId: string | null = null;
       if (col("category") >= 0 && (fields[col("category")] ?? "").trim()) {
         const catName = fields[col("category")]!.trim();
-        const existing = db.prepare(`SELECT id FROM categories WHERE org_id = ? AND parent_id IS NULL AND name = ?`).get(orgId, catName) as { id: string } | undefined;
+        const existing = (await db.prepare(`SELECT id FROM categories WHERE org_id = ? AND parent_id IS NULL AND name = ?`).get(orgId, catName)) as { id: string } | undefined;
         if (existing) categoryId = existing.id;
-        else categoryId = createCategory(orgId, { name: catName });
+        else categoryId = await createCategory(orgId, { name: catName });
       }
 
-      const existingProduct = db.prepare(`SELECT id FROM products WHERE org_id = ? AND sku = ?`).get(orgId, sku) as { id: string } | undefined;
+      const existingProduct = (await db.prepare(`SELECT id FROM products WHERE org_id = ? AND sku = ?`).get(orgId, sku)) as { id: string } | undefined;
       if (existingProduct) {
-        updateProduct(orgId, existingProduct.id, {
+        await updateProduct(orgId, existingProduct.id, {
           name, basePriceCents: priceCents, costCents, taxRateBps: taxBps, unit, saleMode, categoryId,
         }, actor);
         if (barcode) {
-          try { addBarcode(orgId, existingProduct.id, barcode); } catch { /* duplicate barcode on same product is fine */ }
+          try { await addBarcode(orgId, existingProduct.id, barcode); } catch { /* duplicate barcode on same product is fine */ }
         }
         results.push({ line: lineNo, status: "updated", sku });
         updated++;
       } else {
-        createProduct(orgId, {
+        await createProduct(orgId, {
           name, sku, basePriceCents: priceCents, costCents, taxRateBps: taxBps, unit, saleMode, categoryId,
           barcodes: barcode ? [{ code: barcode }] : [],
         }, actor);
@@ -697,10 +697,10 @@ export function importProductsCsv(
       if (!existingProduct && col("stock") >= 0) {
         const stockUnits = parseFloat((fields[col("stock")] ?? "").replace(",", "."));
         if (!Number.isNaN(stockUnits) && stockUnits !== 0) {
-          const warehouse = db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(orgId) as { id: string } | undefined;
+          const warehouse = (await db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(orgId)) as { id: string } | undefined;
           if (warehouse) {
-            const productId = (db.prepare(`SELECT id FROM products WHERE org_id = ? AND sku = ?`).get(orgId, sku) as { id: string }).id;
-            adjustStock({
+            const productId = ((await db.prepare(`SELECT id FROM products WHERE org_id = ? AND sku = ?`).get(orgId, sku)) as { id: string }).id;
+            await adjustStock({
               orgId, warehouseId: warehouse.id, productId, mode: "delta",
               qtyMilli: Math.round(stockUnits * 1000), reasonCode: "initial_load",
               note: "Importação CSV — carga inicial", actor,
@@ -711,7 +711,7 @@ export function importProductsCsv(
       if (col("reorder_point") >= 0) {
         const rp = parseFloat((fields[col("reorder_point")] ?? "").replace(",", "."));
         if (!Number.isNaN(rp)) {
-          db.prepare(`UPDATE products SET reorder_point_milli = ? WHERE org_id = ? AND sku = ?`).run(Math.round(rp * 1000), orgId, sku);
+          await db.prepare(`UPDATE products SET reorder_point_milli = ? WHERE org_id = ? AND sku = ?`).run(Math.round(rp * 1000), orgId, sku);
         }
       }
     } catch (err) {
@@ -719,7 +719,7 @@ export function importProductsCsv(
       results.push({ line: lineNo, status: "error", sku, message: err instanceof Error ? err.message : "Erro desconhecido" });
     }
   }
-  writeAudit({
+  await writeAudit({
     orgId, actorUserId: actor.userId, actorLabel: actor.label,
     action: "products.import_csv", resourceType: "catalog",
     after: { created, updated, errors, totalLines: lines.length - 1 },
@@ -727,9 +727,9 @@ export function importProductsCsv(
   return { results, created, updated, errors };
 }
 
-export function exportProductsCsv(orgId: string): string {
+export async function exportProductsCsv(orgId: string): Promise<string> {
   const db = getDb();
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT p.sku, p.name, p.base_price_cents, p.cost_cents, p.tax_rate_bps, p.unit, p.sale_mode,
               c.name as category, b.code as barcode, p.status
@@ -738,7 +738,7 @@ export function exportProductsCsv(orgId: string): string {
        LEFT JOIN barcodes b ON b.product_id = p.id AND b.variant_id IS NULL
        WHERE p.org_id = ? ORDER BY p.name`,
     )
-    .all(orgId) as Record<string, string | number | null>[];
+    .all(orgId)) as Record<string, string | number | null>[];
   const header = "sku,name,price,cost,tax_bps,unit,sale_mode,category,barcode,status";
   const lines = rows.map((r) =>
     [

@@ -31,5 +31,5 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("products.manage");
-  return { groupId: createModifierGroup(ctx.orgId, body) };
+  return { groupId: await createModifierGroup(ctx.orgId, body) };
 }, schema);

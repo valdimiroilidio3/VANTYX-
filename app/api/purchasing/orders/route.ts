@@ -53,7 +53,7 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("purchasing.manage");
-  const result = createPurchaseOrder(ctx.orgId, {
+  const result = await createPurchaseOrder(ctx.orgId, {
     ...body,
     actor: { userId: ctx.userId, label: ctx.userName, roleKey: ctx.roleKey },
   });

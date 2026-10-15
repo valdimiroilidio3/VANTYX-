@@ -15,20 +15,20 @@ interface LoginResult {
  * Authenticates by email (scoped to the organization the user belongs to)
  * or by email+org. Rate limiting is enforced at the API layer.
  */
-export function loginWithPassword(
+export async function loginWithPassword(
   email: string,
   password: string,
   meta: { userAgent?: string; ip?: string } = {},
-): LoginResult {
+): Promise<LoginResult> {
   const db = getDb();
   const normalized = email.trim().toLowerCase();
-  const user = db
+  const user = (await db
     .prepare(
       `SELECT u.id, u.org_id, u.password_hash, u.status, o.status as org_status
        FROM users u JOIN organizations o ON o.id = u.org_id
        WHERE lower(u.email) = ?`,
     )
-    .get(normalized) as
+    .get(normalized)) as
     | {
         id: string;
         org_id: string;
@@ -52,45 +52,45 @@ export function loginWithPassword(
   const { token, tokenHash } = generateToken();
   const now = Date.now();
   const expiresAt = now + SESSION_TTL_MS;
-  db.prepare(
+  await db.prepare(
     `INSERT INTO sessions (id, org_id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent, ip)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(newId("ses"), user.org_id, user.id, tokenHash, now, expiresAt, now, meta.userAgent ?? null, meta.ip ?? null);
-  db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now, user.id);
+  await db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now, user.id);
 
   return { token, userId: user.id, orgId: user.org_id, expiresAt };
 }
 
 /** Operator PIN switch (POS terminals): validates PIN on active session. */
-export function loginWithPin(
+export async function loginWithPin(
   userId: string,
   pin: string,
-): boolean {
+): Promise<boolean> {
   const db = getDb();
-  const row = db
+  const row = (await db
     .prepare(`SELECT pin_hash, status FROM users WHERE id = ?`)
-    .get(userId) as { pin_hash: string | null; status: string } | undefined;
+    .get(userId)) as { pin_hash: string | null; status: string } | undefined;
   if (!row || row.status !== "active" || !row.pin_hash) return false;
   return verifySecret(pin, row.pin_hash);
 }
 
-export function logout(token: string): void {
+export async function logout(token: string): Promise<void> {
   const db = getDb();
-  db.prepare(
+  await db.prepare(
     `UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
   ).run(Date.now(), generateTokenHash(token));
 }
 
-export function revokeSession(sessionId: string): void {
+export async function revokeSession(sessionId: string): Promise<void> {
   const db = getDb();
-  db.prepare(
+  await db.prepare(
     `UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
   ).run(Date.now(), sessionId);
 }
 
-export function revokeAllUserSessions(userId: string): number {
+export async function revokeAllUserSessions(userId: string): Promise<number> {
   const db = getDb();
-  const info = db
+  const info = await db
     .prepare(
       `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
     )
@@ -98,9 +98,9 @@ export function revokeAllUserSessions(userId: string): number {
   return info.changes;
 }
 
-export function setUserPin(userId: string, pin: string): void {
+export async function setUserPin(userId: string, pin: string): Promise<void> {
   const db = getDb();
-  db.prepare(`UPDATE users SET pin_hash = ?, updated_at = ? WHERE id = ?`).run(
+  await db.prepare(`UPDATE users SET pin_hash = ?, updated_at = ? WHERE id = ?`).run(
     hashSecret(pin),
     Date.now(),
     userId,

@@ -9,8 +9,8 @@ import type { Migration } from "../migrate";
 export const migration003Industry: Migration = {
   id: "003_industry",
   name: "Vertical domains: restaurant, scheduling, repair orders",
-  up(db) {
-    db.exec(`
+  async up(db) {
+    await db.exec(`
 -- ============ RESTAURANT ============
 CREATE TABLE r_tables (
   id          TEXT PRIMARY KEY,

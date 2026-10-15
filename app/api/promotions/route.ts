@@ -40,8 +40,8 @@ export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("promotions.manage");
   if (body.action === "create") {
     const { action: _a, ...input } = body;
-    return { promotionId: createPromotion(ctx.orgId, input) };
+    return { promotionId: await createPromotion(ctx.orgId, input) };
   }
-  setPromotionStatus(ctx.orgId, body.promotionId, body.status);
+  await setPromotionStatus(ctx.orgId, body.promotionId, body.status);
   return listPromotions(ctx.orgId);
 }, schema);

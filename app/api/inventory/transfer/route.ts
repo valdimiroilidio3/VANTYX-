@@ -13,7 +13,7 @@ export const GET = routeHandler(async (_body, request) => {
   const ctx = await requirePermission("inventory.view");
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") ?? 40) || 40;
-  return { transfers: listTransfers(ctx.orgId, limit) };
+  return { transfers: await listTransfers(ctx.orgId, limit) };
 });
 
 const schema = z.discriminatedUnion("action", [
@@ -51,6 +51,6 @@ export const POST = routeHandler(async (body) => {
       actor,
     });
   }
-  receiveTransfer(ctx.orgId, body.transferId, actor);
+  await receiveTransfer(ctx.orgId, body.transferId, actor);
   return { received: body.transferId };
 }, schema);

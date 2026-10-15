@@ -71,8 +71,8 @@ function withFrozenNow<T>(ms: number, fn: () => T): T {
   }
 }
 
-function orgExists(name: string): boolean {
-  const row = getDb().prepare(`SELECT id FROM organizations WHERE lower(name) = lower(?)`).get(name);
+async function orgExists(name: string): Promise<boolean> {
+  const row = await getDb().prepare(`SELECT id FROM organizations WHERE lower(name) = lower(?)`).get(name);
   return Boolean(row);
 }
 
@@ -138,9 +138,9 @@ const SUPER_PRODUCTS: DemoProduct[] = [
   { name: "Sabonete Líquido 500ml", price: 249, cost: 130, taxBps: 2300, unit: "un", stockQty: 42, reorder: 14, category: "Limpeza & Higiene" },
 ];
 
-function seedSupermarket(): void {
+async function seedSupermarket(): Promise<void> {
   const random = rng(20260101);
-  const result = createOrganization({
+  const result = await createOrganization({
     name: SUPER_NAME,
     legalName: "Mercado Lumena, Lda. (demonstração)",
     taxId: "500000001",
@@ -157,11 +157,11 @@ function seedSupermarket(): void {
   });
   const { orgId, branchId, warehouseId, terminalId, ownerUserId } = result;
   const owner = { userId: ownerUserId, label: "Ana Nunes", roleKey: "owner" };
-  completeOnboarding(orgId, { userId: ownerUserId, label: "Ana Nunes" });
+  await completeOnboarding(orgId, { userId: ownerUserId, label: "Ana Nunes" });
   console.log(`  organização ${orgId} criada (supermarket)`);
 
   // Second user: cashier with supervisor PIN (demo override flows)
-  createUser(
+  await createUser(
     orgId,
     { name: "Rui Operador", email: "demo.caixa@vantyx.demo", password: DEMO_PASSWORD, roleKey: "cashier", pin: "2468" },
     { userId: ownerUserId, label: "Ana Nunes" },
@@ -169,11 +169,11 @@ function seedSupermarket(): void {
 
   // Categories
   const catIds = new Map<string, string>();
-  for (const name of SUPER_CATEGORIES) catIds.set(name, createCategory(orgId, { name }));
+  for (const name of SUPER_CATEGORIES) catIds.set(name, await createCategory(orgId, { name }));
 
   // Products + valid EAN-13 barcodes + initial stock
   const products: { id: string; price: number; weight: boolean }[] = [];
-  SUPER_PRODUCTS.forEach((p, i) => {
+  SUPER_PRODUCTS.forEach(async (p, i) => {
     const seq = String(i + 1).padStart(4, "0");
     const ean = ean12To13(`56001230${seq}`);
     const barcodes: { code: string; embeddedKind?: "price" | "weight" | null }[] = [{ code: ean }];
@@ -181,7 +181,7 @@ function seedSupermarket(): void {
       // Embedded scale barcode (prefix 22 + item code + price) — supermarket pack
       barcodes.push({ code: ean12To13(`22${String(i + 1).padStart(5, "0")}${String(p.price).padStart(5, "0")}`), embeddedKind: "price" });
     }
-    const id = createProduct(
+    const id = await createProduct(
       orgId,
       {
         name: p.name,
@@ -202,7 +202,7 @@ function seedSupermarket(): void {
       { userId: ownerUserId, label: "Ana Nunes" },
     );
     products.push({ id, price: p.price, weight: Boolean(p.weight) });
-    adjustStock({
+    await adjustStock({
       orgId,
       warehouseId,
       productId: id,
@@ -215,7 +215,7 @@ function seedSupermarket(): void {
   console.log(`  ${products.length} produtos com EAN-13 válido + stock inicial`);
 
   // Suppliers + a draft purchase order (replenishment flow)
-  const sup1 = createSupplier(orgId, {
+  const sup1 = await createSupplier(orgId, {
     name: "Recheio Distribuição (DEMO)",
     contactName: "Carlos Fonseca",
     email: "encomendas@recheiodemo.pt",
@@ -224,7 +224,7 @@ function seedSupermarket(): void {
     paymentTerms: "30 dias",
     leadTimeDays: 3,
   });
-  createSupplier(orgId, {
+  await createSupplier(orgId, {
     name: "Quinta dos Frescos (DEMO)",
     contactName: "Maria João",
     phone: "+351 239 000 222",
@@ -233,7 +233,7 @@ function seedSupermarket(): void {
     leadTimeDays: 1,
   });
   const fresh = products.slice(15, 18);
-  createPurchaseOrder(orgId, {
+  await createPurchaseOrder(orgId, {
     supplierId: sup1,
     warehouseId,
     expectedAt: Date.now() + 3 * DAY,
@@ -246,13 +246,13 @@ function seedSupermarket(): void {
   // Customers
   const actor = { userId: ownerUserId, label: "Ana Nunes" };
   const custIds = [
-    createCustomer(orgId, { name: "João Pereira", email: "joao.pereira@demo.pt", phone: "+351 911 111 111", taxId: "222333444", city: "Coimbra", marketingConsent: true }, actor),
-    createCustomer(orgId, { name: "Sofia Martins", email: "sofia.martins@demo.pt", phone: "+351 922 222 222", city: "Condeixa", marketingConsent: false }, actor),
-    createCustomer(orgId, { name: "Cantinas da Universidade (DEMO)", email: "compras@uni-demo.pt", phone: "+351 239 333 333", taxId: "503345678", customerType: "business", creditLimitCents: 150_000 }, actor),
+    await createCustomer(orgId, { name: "João Pereira", email: "joao.pereira@demo.pt", phone: "+351 911 111 111", taxId: "222333444", city: "Coimbra", marketingConsent: true }, actor),
+    await createCustomer(orgId, { name: "Sofia Martins", email: "sofia.martins@demo.pt", phone: "+351 922 222 222", city: "Condeixa", marketingConsent: false }, actor),
+    await createCustomer(orgId, { name: "Cantinas da Universidade (DEMO)", email: "compras@uni-demo.pt", phone: "+351 239 333 333", taxId: "503345678", customerType: "business", creditLimitCents: 150_000 }, actor),
   ];
 
   // Open cash session for TODAY first (today's sales attach to it)
-  const todaySession = openSession(orgId, {
+  const todaySession = await openSession(orgId, {
     branchId,
     terminalId,
     openingFloatCents: 20_000,
@@ -289,8 +289,8 @@ function seedSupermarket(): void {
       const method = methods[Math.floor(random() * methods.length)]!;
       const customerId = random() < 0.3 ? custIds[Math.floor(random() * custIds.length)]! : null;
       const isToday = daysAgo === 0;
-      withFrozenNow(when, () => {
-        checkout({
+      await withFrozenNow(when, async () => {
+        await checkout({
           branchId,
           terminalId,
           cashSessionId: isToday ? todaySession.sessionId : null,
@@ -336,9 +336,9 @@ const REST_PRODUCTS: DemoProduct[] = [
   { name: "Galão", price: 120, cost: 35, taxBps: 2300, unit: "un", stockQty: 0, category: "Cafetaria" },
 ];
 
-function seedRestaurant(): void {
+async function seedRestaurant(): Promise<void> {
   const random = rng(777001);
-  const result = createOrganization({
+  const result = await createOrganization({
     name: REST_NAME,
     legalName: "Tasca Digital, Unipessoal Lda. (demonstração)",
     taxId: "500000002",
@@ -356,19 +356,19 @@ function seedRestaurant(): void {
   const { orgId, branchId, terminalId, ownerUserId } = result;
   const owner = { userId: ownerUserId, label: "Miguel Santos", roleKey: "owner" };
   const actor = { userId: ownerUserId, label: "Miguel Santos" };
-  completeOnboarding(orgId, actor);
+  await completeOnboarding(orgId, actor);
   console.log(`  organização ${orgId} criada (restaurant)`);
 
-  createUser(orgId, { name: "Chef Luís", email: "demo.chef@vantyx.demo", password: DEMO_PASSWORD, roleKey: "kitchen" }, actor);
-  createUser(orgId, { name: "Inês da Sala", email: "demo.sala@vantyx.demo", password: DEMO_PASSWORD, roleKey: "floor" }, actor);
+  await createUser(orgId, { name: "Chef Luís", email: "demo.chef@vantyx.demo", password: DEMO_PASSWORD, roleKey: "kitchen" }, actor);
+  await createUser(orgId, { name: "Inês da Sala", email: "demo.sala@vantyx.demo", password: DEMO_PASSWORD, roleKey: "floor" }, actor);
 
   const catIds = new Map<string, string>();
-  for (const name of REST_CATEGORIES) catIds.set(name, createCategory(orgId, { name }));
+  for (const name of REST_CATEGORIES) catIds.set(name, await createCategory(orgId, { name }));
 
   const products: { id: string; price: number; name: string }[] = [];
-  REST_PRODUCTS.forEach((p, i) => {
+  REST_PRODUCTS.forEach(async (p, i) => {
     const seq = String(i + 1).padStart(4, "0");
-    const id = createProduct(
+    const id = await createProduct(
       orgId,
       {
         name: p.name,
@@ -390,14 +390,14 @@ function seedRestaurant(): void {
   // Modifier groups (restaurant pack); keep real ids for the live order
   const grill = products.find((p) => p.name === "Bife da Vazia Grelhado");
   const francesinha = products.find((p) => p.name === "Francesinha da Casa");
-  createModifierGroup(orgId, {
+  await createModifierGroup(orgId, {
     name: "Ponto da carne",
     minSelect: 1,
     maxSelect: 1,
     options: [{ name: "Mal passado" }, { name: "Médio", isDefault: true }, { name: "Bem passado" }],
     productIds: grill ? [grill.id] : [],
   });
-  const extrasGroupId = createModifierGroup(orgId, {
+  const extrasGroupId = await createModifierGroup(orgId, {
     name: "Extras",
     minSelect: 0,
     maxSelect: 4,
@@ -410,29 +410,29 @@ function seedRestaurant(): void {
     productIds: francesinha ? [francesinha.id] : [],
   });
   const db = getDb();
-  const batataOption = db
+  const batataOption = (await db
     .prepare(`SELECT id, name, price_delta_cents FROM modifier_options WHERE group_id = ? AND name = ?`)
-    .get(extrasGroupId, "Batata frita extra") as { id: string; name: string; price_delta_cents: number };
+    .get(extrasGroupId, "Batata frita extra")) as { id: string; name: string; price_delta_cents: number };
   console.log(`  ${products.length} itens de menu + 2 grupos de modificadores`);
 
   // Floor: two zones
   const tableIds: string[] = [];
   for (let i = 1; i <= 6; i++) {
-    tableIds.push(upsertTable(orgId, branchId, { name: `Mesa ${i}`, zone: "Sala", seats: i <= 2 ? 2 : 4, positionX: ((i - 1) % 3) * 160, positionY: Math.floor((i - 1) / 3) * 140 }));
+    tableIds.push(await upsertTable(orgId, branchId, { name: `Mesa ${i}`, zone: "Sala", seats: i <= 2 ? 2 : 4, positionX: ((i - 1) % 3) * 160, positionY: Math.floor((i - 1) / 3) * 140 }));
   }
   for (let i = 7; i <= 10; i++) {
-    tableIds.push(upsertTable(orgId, branchId, { name: `Esplanada ${i - 6}`, zone: "Esplanada", seats: 4, positionX: ((i - 7) % 4) * 160, positionY: 300 }));
+    tableIds.push(await upsertTable(orgId, branchId, { name: `Esplanada ${i - 6}`, zone: "Esplanada", seats: 4, positionX: ((i - 7) % 4) * 160, positionY: 300 }));
   }
 
   // One LIVE open order with a kitchen ticket (floor + KDS pages)
   const soup = products[2]!;
   const francesinhaP = products[4]!;
   const imperial = products[13]!;
-  const liveOrder = withFrozenNow(Date.now() - 25 * 60_000, () =>
-    openOrder(orgId, { branchId, tableId: tableIds[1]!, channel: "dine_in", guestCount: 2, actor }),
+  const liveOrder = await withFrozenNow(Date.now() - 25 * 60_000, async () =>
+    await openOrder(orgId, { branchId, tableId: tableIds[1]!, channel: "dine_in", guestCount: 2, actor }),
   );
-  withFrozenNow(Date.now() - 20 * 60_000, () =>
-    addOrderItems(
+  await withFrozenNow(Date.now() - 20 * 60_000, async () =>
+    await addOrderItems(
       orgId,
       liveOrder.orderId,
       [
@@ -458,7 +458,7 @@ function seedRestaurant(): void {
   console.log("  10 mesas (2 zonas) + 1 pedido aberto com ticket de cozinha");
 
   // Reservations: one later today, one tomorrow
-  createReservation(orgId, {
+  await createReservation(orgId, {
     branchId,
     tableId: tableIds[5]!,
     customerName: "Família Antunes",
@@ -467,7 +467,7 @@ function seedRestaurant(): void {
     reservedFor: ts(0, 20, 0),
     note: "Aniversário — trazer sobremesa com vela",
   });
-  createReservation(orgId, {
+  await createReservation(orgId, {
     branchId,
     customerName: "Almoço de empresa (DEMO)",
     partySize: 12,
@@ -475,7 +475,7 @@ function seedRestaurant(): void {
   });
 
   // Cash session open today
-  openSession(orgId, { branchId, terminalId, openingFloatCents: 15_000, shiftLabel: "Turno almoço (demo)", actor });
+  await openSession(orgId, { branchId, terminalId, openingFloatCents: 15_000, shiftLabel: "Turno almoço (demo)", actor });
 
   // 14 days of counter/takeaway sales + billed dine-in orders (monotonic
   // cursor keeps the SHA-256 chain linear in created_at order).
@@ -511,15 +511,15 @@ function seedRestaurant(): void {
         // tableIds[5] (held as 'reserved' for the reservations demo).
         const freeTables = tableIds.filter((_, idx) => idx !== 1 && idx !== 5);
         const tableId = freeTables[Math.floor(random() * freeTables.length)]!;
-        withFrozenNow(when, () => {
-          const opened = openOrder(orgId, { branchId, tableId, channel: "dine_in", guestCount: guests, actor });
-          addOrderItems(
+        await withFrozenNow(when, async () => {
+          const opened = await openOrder(orgId, { branchId, tableId, channel: "dine_in", guestCount: guests, actor });
+          await addOrderItems(
             orgId,
             opened.orderId,
             lines.map((ln) => ({ productId: ln.productId, qtyMilli: ln.qtyMilli })),
             actor,
           );
-          const detail = getOrderDetail(orgId, opened.orderId) as {
+          const detail = await getOrderDetail(orgId, opened.orderId) as {
             items: { id: string; product_id: string; qty_milli: number; status: string }[];
           };
           const billLines = detail.items
@@ -529,7 +529,7 @@ function seedRestaurant(): void {
               qtyMilli: it.qty_milli,
               orderItemId: it.id,
             }));
-          checkout({
+          await checkout({
             branchId,
             terminalId,
             orderId: opened.orderId,
@@ -543,8 +543,8 @@ function seedRestaurant(): void {
           });
         });
       } else {
-        withFrozenNow(when, () => {
-          checkout({
+        await withFrozenNow(when, async () => {
+          await checkout({
             branchId,
             terminalId,
             channel: random() < 0.5 ? "takeaway" : "counter",
@@ -563,7 +563,7 @@ function seedRestaurant(): void {
 
 /* -------------------------------- main -------------------------------- */
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const onlySuper = args.includes("--super-only");
   const onlyRest = args.includes("--rest-only");
@@ -573,21 +573,21 @@ function main(): void {
   const t0 = Date.now();
 
   if (!onlyRest) {
-    if (orgExists(SUPER_NAME)) {
+    if (await orgExists(SUPER_NAME)) {
       console.log(`  "${SUPER_NAME}" já existe — ignorada (script idempotente).`);
     } else {
-      seedSupermarket();
+      await seedSupermarket();
     }
   }
   if (!onlySuper) {
-    if (orgExists(REST_NAME)) {
+    if (await orgExists(REST_NAME)) {
       console.log(`  "${REST_NAME}" já existe — ignorada (script idempotente).`);
     } else {
-      seedRestaurant();
+      await seedRestaurant();
     }
   }
 
-  const orgs = (db.prepare(`SELECT COUNT(*) c FROM organizations WHERE demo = 1`).get() as { c: number }).c;
+  const orgs = ((await db.prepare(`SELECT COUNT(*) c FROM organizations WHERE demo = 1`).get()) as { c: number }).c;
   console.log(`Concluído em ${((Date.now() - t0) / 1000).toFixed(1)}s — ${orgs} organização(ões) demo na base de dados.`);
   console.log("Logins demo:");
   console.log(`  Supermercado → demo.super@vantyx.demo / ${DEMO_PASSWORD}  (caixa: demo.caixa@vantyx.demo, PIN supervisor 2468)`);
@@ -595,7 +595,7 @@ function main(): void {
 }
 
 try {
-  main();
+  await main();
 } catch (err) {
   console.error("Falha no seed demo:", err instanceof Error ? (err.stack ?? err.message) : err);
   process.exit(1);

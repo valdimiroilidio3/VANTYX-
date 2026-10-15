@@ -41,6 +41,6 @@ export const POST = routeHandler(async (body) => {
   if (body.action === "create") {
     return createInvite(ctx.orgId, { email: body.email, roleKey: body.roleKey }, actor);
   }
-  revokeInvite(ctx.orgId, body.inviteId, actor);
+  await revokeInvite(ctx.orgId, body.inviteId, actor);
   return listInvites(ctx.orgId);
 }, schema);

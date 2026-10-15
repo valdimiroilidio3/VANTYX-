@@ -50,32 +50,32 @@ export interface StockLevelRow {
   updated_at: number;
 }
 
-export function getStockLevel(
+export async function getStockLevel(
   db: Db,
   warehouseId: string,
   productId: string,
   variantId: string | null = null,
-): StockLevelRow | undefined {
-  return db
+): Promise<StockLevelRow | undefined> {
+  return (await db
     .prepare(
       `SELECT * FROM stock_levels
        WHERE warehouse_id = ? AND product_id = ? AND variant_id IS ?`,
     )
-    .get(warehouseId, productId, variantId) as StockLevelRow | undefined;
+    .get(warehouseId, productId, variantId)) as StockLevelRow | undefined;
 }
 
-export function totalStockFor(
+export async function totalStockFor(
   db: Db,
   orgId: string,
   productId: string,
   variantId: string | null = null,
-): { qtyMilli: number; reservedMilli: number } {
-  const row = db
+): Promise<{ qtyMilli: number; reservedMilli: number }> {
+  const row = (await db
     .prepare(
       `SELECT COALESCE(SUM(qty_milli),0) q, COALESCE(SUM(reserved_milli),0) r
        FROM stock_levels WHERE org_id = ? AND product_id = ? AND variant_id IS ?`,
     )
-    .get(orgId, productId, variantId) as { q: number; r: number };
+    .get(orgId, productId, variantId)) as { q: number; r: number };
   return { qtyMilli: row.q, reservedMilli: row.r };
 }
 
@@ -83,13 +83,13 @@ export function totalStockFor(
  * Core stock writer. MUST be called inside a transaction.
  * Returns events to emit after commit (never emits inside the tx).
  */
-export function applyStockDelta(
+export async function applyStockDelta(
   db: Db,
   input: StockDeltaInput,
-): { level: StockLevelRow; events: PendingEvent[] } {
+): Promise<{ level: StockLevelRow; events: PendingEvent[] }> {
   const events: PendingEvent[] = [];
   const now = Date.now();
-  const existing = getStockLevel(
+  const existing = await getStockLevel(
     db,
     input.warehouseId,
     input.productId,
@@ -110,7 +110,7 @@ export function applyStockDelta(
     if (input.qtyMilli > 0 && input.unitCostCents != null) {
       newAvg = input.unitCostCents;
     }
-    db.prepare(
+    await db.prepare(
       `INSERT INTO stock_levels (id, org_id, warehouse_id, product_id, variant_id, qty_milli, reserved_milli, avg_cost_cents, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     ).run(
@@ -133,13 +133,13 @@ export function applyStockDelta(
         input.unitCostCents,
       );
     }
-    db.prepare(
+    await db.prepare(
       `UPDATE stock_levels SET qty_milli = ?, avg_cost_cents = ?, updated_at = ?
        WHERE id = ?`,
     ).run(newQty, newAvg, now, existing.id);
   }
 
-  db.prepare(
+  await db.prepare(
     `INSERT INTO stock_movements
       (id, org_id, warehouse_id, product_id, variant_id, qty_milli, reason_code,
        ref_type, ref_id, batch_id, unit_cost_cents, note, created_by, created_at)
@@ -173,9 +173,9 @@ export function applyStockDelta(
     });
   }
 
-  const product = db
+  const product = (await db
     .prepare(`SELECT name, reorder_point_milli FROM products WHERE id = ?`)
-    .get(input.productId) as
+    .get(input.productId)) as
     | { name: string; reorder_point_milli: number | null }
     | undefined;
   if (product) {
@@ -201,17 +201,17 @@ export function applyStockDelta(
     }
   }
 
-  const level = getStockLevel(
+  const level = (await getStockLevel(
     db,
     input.warehouseId,
     input.productId,
     input.variantId ?? null,
-  )!;
+  ))!;
   return { level, events };
 }
 
 /** Checks policy before a sale/issue; throws when blocked. */
-export function assertStockAvailable(
+export async function assertStockAvailable(
   db: Db,
   orgId: string,
   warehouseId: string,
@@ -220,8 +220,8 @@ export function assertStockAvailable(
   requestedMilli: number,
   settings: OrgSettings,
   productAllowNegative?: number | null,
-): void {
-  const level = getStockLevel(db, warehouseId, productId, variantId);
+): Promise<void> {
+  const level = await getStockLevel(db, warehouseId, productId, variantId);
   const available = (level?.qty_milli ?? 0) - (level?.reserved_milli ?? 0);
   const policy = (settings.stockPolicy ?? "warn_negative") as StockPolicy;
   const result = canFulfillStock({
@@ -251,15 +251,15 @@ export interface AdjustmentInput {
   actor: { userId: string; label: string };
 }
 
-export function adjustStock(input: AdjustmentInput): { newQtyMilli: number } {
+export async function adjustStock(input: AdjustmentInput): Promise<{ newQtyMilli: number }> {
   if (!input.reasonCode) badRequest("Motivo do ajuste é obrigatório.");
   if (!input.note?.trim() && input.reasonCode !== "initial_load") {
     badRequest("Nota justificativa é obrigatória para ajustes.");
   }
   const db = getDb();
   let newQty = 0;
-  tx(db, () => {
-    const level = getStockLevel(
+  await tx(db, async () => {
+    const level = await getStockLevel(
       db,
       input.warehouseId,
       input.productId,
@@ -273,7 +273,7 @@ export function adjustStock(input: AdjustmentInput): { newQtyMilli: number } {
       newQty = level?.qty_milli ?? 0;
       return;
     }
-    const result = applyStockDelta(db, {
+    const result = await applyStockDelta(db, {
       orgId: input.orgId,
       warehouseId: input.warehouseId,
       productId: input.productId,
@@ -285,7 +285,7 @@ export function adjustStock(input: AdjustmentInput): { newQtyMilli: number } {
       createdBy: input.actor.userId,
     });
     newQty = result.level.qty_milli;
-    writeAudit(
+    await writeAudit(
       {
         orgId: input.orgId,
         actorUserId: input.actor.userId,
@@ -320,16 +320,16 @@ export interface TransferInput {
   actor: { userId: string; label: string };
 }
 
-export function createTransfer(input: TransferInput): { transferId: string } {
+export async function createTransfer(input: TransferInput): Promise<{ transferId: string }> {
   if (input.fromWarehouseId === input.toWarehouseId) {
     badRequest("Armazéns de origem e destino devem ser diferentes.");
   }
   if (!input.lines.length) badRequest("Transferência sem linhas.");
   const db = getDb();
   const transferId = newId("trf");
-  const settings = getOrgProfile(input.orgId).settings;
-  tx(db, () => {
-    db.prepare(
+  const settings = (await getOrgProfile(input.orgId)).settings;
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO stock_transfers (id, org_id, from_warehouse_id, to_warehouse_id, status, note, created_by, created_at)
        VALUES (?, ?, ?, ?, 'in_transit', ?, ?, ?)`,
     ).run(transferId, input.orgId, input.fromWarehouseId, input.toWarehouseId, input.note ?? null, input.actor.userId, Date.now());
@@ -339,12 +339,12 @@ export function createTransfer(input: TransferInput): { transferId: string } {
     );
     for (const line of input.lines) {
       if (line.qtyMilli <= 0) continue;
-      assertStockAvailable(
+      await assertStockAvailable(
         db, input.orgId, input.fromWarehouseId, line.productId,
         line.variantId ?? null, line.qtyMilli, settings, null,
       );
-      insertLine.run(newId("trfl"), input.orgId, transferId, line.productId, line.variantId ?? null, line.qtyMilli);
-      applyStockDelta(db, {
+      await insertLine.run(newId("trfl"), input.orgId, transferId, line.productId, line.variantId ?? null, line.qtyMilli);
+      await applyStockDelta(db, {
         orgId: input.orgId,
         warehouseId: input.fromWarehouseId,
         productId: line.productId,
@@ -356,7 +356,7 @@ export function createTransfer(input: TransferInput): { transferId: string } {
         createdBy: input.actor.userId,
       });
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId: input.orgId,
         actorUserId: input.actor.userId,
@@ -372,25 +372,25 @@ export function createTransfer(input: TransferInput): { transferId: string } {
   return { transferId };
 }
 
-export function receiveTransfer(
+export async function receiveTransfer(
   orgId: string,
   transferId: string,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    const transfer = db
+  await tx(db, async () => {
+    const transfer = (await db
       .prepare(`SELECT * FROM stock_transfers WHERE id = ? AND org_id = ?`)
-      .get(transferId, orgId) as
+      .get(transferId, orgId)) as
       | { id: string; to_warehouse_id: string; status: string }
       | undefined;
     if (!transfer) notFound("Transferência");
     if (transfer!.status === "completed") {
       throw new ApiError(409, "Transferência já recebida.", "already_completed");
     }
-    const lines = db
+    const lines = (await db
       .prepare(`SELECT * FROM stock_transfer_lines WHERE transfer_id = ?`)
-      .all(transferId) as {
+      .all(transferId)) as {
       id: string;
       product_id: string;
       variant_id: string | null;
@@ -400,7 +400,7 @@ export function receiveTransfer(
     for (const line of lines) {
       const pending = line.qty_milli - line.received_qty_milli;
       if (pending <= 0) continue;
-      applyStockDelta(db, {
+      await applyStockDelta(db, {
         orgId,
         warehouseId: transfer!.to_warehouse_id,
         productId: line.product_id,
@@ -411,14 +411,14 @@ export function receiveTransfer(
         refId: transferId,
         createdBy: actor.userId,
       });
-      db.prepare(
+      await db.prepare(
         `UPDATE stock_transfer_lines SET received_qty_milli = qty_milli WHERE id = ?`,
       ).run(line.id);
     }
-    db.prepare(
+    await db.prepare(
       `UPDATE stock_transfers SET status = 'completed', completed_at = ? WHERE id = ?`,
     ).run(Date.now(), transferId);
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "inventory.transfer_receive", resourceType: "stock_transfer", resourceId: transferId },
       db,
     );
@@ -427,25 +427,25 @@ export function receiveTransfer(
 
 /* ------------------------ Cycle counting -------------------------- */
 
-export function createCountSheet(
+export async function createCountSheet(
   orgId: string,
   warehouseId: string,
   productIds: string[] | null,
   actor: { userId: string; label: string },
-): { sheetId: string; lines: number } {
+): Promise<{ sheetId: string; lines: number }> {
   const db = getDb();
   const sheetId = newId("cnt");
   let lineCount = 0;
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO count_sheets (id, org_id, warehouse_id, status, created_by, created_at)
        VALUES (?, ?, ?, 'counting', ?, ?)`,
     ).run(sheetId, orgId, warehouseId, actor.userId, Date.now());
-    const products = db
+    const products = (await db
       .prepare(
         `SELECT id FROM products WHERE org_id = ? AND track_stock = 1 AND status != 'archived'`,
       )
-      .all(orgId) as { id: string }[];
+      .all(orgId)) as { id: string }[];
     const filter = productIds ? new Set(productIds) : null;
     const insertLine = db.prepare(
       `INSERT INTO count_sheet_lines (id, sheet_id, org_id, product_id, variant_id, expected_milli)
@@ -453,22 +453,22 @@ export function createCountSheet(
     );
     for (const product of products) {
       if (filter && !filter.has(product.id)) continue;
-      const variants = db
+      const variants = (await db
         .prepare(`SELECT id FROM product_variants WHERE product_id = ?`)
-        .all(product.id) as { id: string }[];
+        .all(product.id)) as { id: string }[];
       if (variants.length === 0) {
-        const level = getStockLevel(db, warehouseId, product.id, null);
-        insertLine.run(newId("cntl"), sheetId, orgId, product.id, null, level?.qty_milli ?? 0);
+        const level = await getStockLevel(db, warehouseId, product.id, null);
+        await insertLine.run(newId("cntl"), sheetId, orgId, product.id, null, level?.qty_milli ?? 0);
         lineCount++;
       } else {
         for (const variant of variants) {
-          const level = getStockLevel(db, warehouseId, product.id, variant.id);
-          insertLine.run(newId("cntl"), sheetId, orgId, product.id, variant.id, level?.qty_milli ?? 0);
+          const level = await getStockLevel(db, warehouseId, product.id, variant.id);
+          await insertLine.run(newId("cntl"), sheetId, orgId, product.id, variant.id, level?.qty_milli ?? 0);
           lineCount++;
         }
       }
     }
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "inventory.count_create", resourceType: "count_sheet", resourceId: sheetId, after: { warehouseId, lines: lineCount } },
       db,
     );
@@ -476,51 +476,51 @@ export function createCountSheet(
   return { sheetId, lines: lineCount };
 }
 
-export function recordCountLine(
+export async function recordCountLine(
   orgId: string,
   sheetId: string,
   lineId: string,
   countedMilli: number,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    const line = db
+  await tx(db, async () => {
+    const line = (await db
       .prepare(`SELECT * FROM count_sheet_lines WHERE id = ? AND org_id = ? AND sheet_id = ?`)
-      .get(lineId, orgId, sheetId) as
+      .get(lineId, orgId, sheetId)) as
       | { id: string; product_id: string; variant_id: string | null; expected_milli: number }
       | undefined;
     if (!line) notFound("Linha de contagem");
     const variance = countedMilli - line!.expected_milli;
-    db.prepare(
+    await db.prepare(
       `UPDATE count_sheet_lines SET counted_milli = ?, variance_milli = ?, counted_by = ?, counted_at = ?
        WHERE id = ?`,
     ).run(countedMilli, variance, actor.userId, Date.now(), lineId);
   });
 }
 
-export function completeCountSheet(
+export async function completeCountSheet(
   orgId: string,
   sheetId: string,
   actor: { userId: string; label: string },
-): { adjustments: number } {
+): Promise<{ adjustments: number }> {
   const db = getDb();
   let adjustments = 0;
-  tx(db, () => {
-    const sheet = db
+  await tx(db, async () => {
+    const sheet = (await db
       .prepare(`SELECT * FROM count_sheets WHERE id = ? AND org_id = ?`)
-      .get(sheetId, orgId) as
+      .get(sheetId, orgId)) as
       | { id: string; warehouse_id: string; status: string }
       | undefined;
     if (!sheet) notFound("Folha de contagem");
     if (sheet!.status === "completed") {
       throw new ApiError(409, "Contagem já concluída.", "already_completed");
     }
-    const lines = db
+    const lines = (await db
       .prepare(
         `SELECT * FROM count_sheet_lines WHERE sheet_id = ? AND counted_milli IS NOT NULL`,
       )
-      .all(sheetId) as {
+      .all(sheetId)) as {
       id: string;
       product_id: string;
       variant_id: string | null;
@@ -531,7 +531,7 @@ export function completeCountSheet(
     for (const line of lines) {
       const variance = line.counted_milli - line.expected_milli;
       if (variance === 0) continue;
-      applyStockDelta(db, {
+      await applyStockDelta(db, {
         orgId,
         warehouseId: sheet!.warehouse_id,
         productId: line.product_id,
@@ -545,10 +545,10 @@ export function completeCountSheet(
       });
       adjustments++;
     }
-    db.prepare(
+    await db.prepare(
       `UPDATE count_sheets SET status = 'completed', completed_at = ? WHERE id = ?`,
     ).run(Date.now(), sheetId);
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "inventory.count_complete", resourceType: "count_sheet", resourceId: sheetId, after: { adjustments } },
       db,
     );
@@ -558,7 +558,7 @@ export function completeCountSheet(
 
 /* ---------------------------- Batches ----------------------------- */
 
-export function receiveBatch(
+export async function receiveBatch(
   db: Db,
   input: {
     orgId: string;
@@ -571,25 +571,25 @@ export function receiveBatch(
     unitCostCents?: number | null;
     supplierId?: string | null;
   },
-): string {
+): Promise<string> {
   const now = Date.now();
-  const existing = db
+  const existing = (await db
     .prepare(
       `SELECT id, qty_remaining_milli, qty_received_milli FROM batches
        WHERE org_id = ? AND warehouse_id = ? AND product_id = ? AND variant_id IS ? AND batch_number = ?`,
     )
-    .get(input.orgId, input.warehouseId, input.productId, input.variantId ?? null, input.batchNumber) as
+    .get(input.orgId, input.warehouseId, input.productId, input.variantId ?? null, input.batchNumber)) as
     | { id: string; qty_remaining_milli: number; qty_received_milli: number }
     | undefined;
   if (existing) {
-    db.prepare(
+    await db.prepare(
       `UPDATE batches SET qty_received_milli = qty_received_milli + ?, qty_remaining_milli = qty_remaining_milli + ?, expiry_date = COALESCE(?, expiry_date)
        WHERE id = ?`,
     ).run(input.qtyMilli, input.qtyMilli, input.expiryDate ?? null, existing.id);
     return existing.id;
   }
   const id = newId("batch");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO batches (id, org_id, warehouse_id, product_id, variant_id, batch_number, expiry_date, qty_received_milli, qty_remaining_milli, unit_cost_cents, supplier_id, received_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
@@ -601,7 +601,7 @@ export function receiveBatch(
 }
 
 /** Consumes batch quantities FEFO when a product has batch tracking. */
-export function consumeBatchesFEFO(
+export async function consumeBatchesFEFO(
   db: Db,
   input: {
     orgId: string;
@@ -610,13 +610,13 @@ export function consumeBatchesFEFO(
     variantId?: string | null;
     qtyMilli: number;
   },
-): { batchId: string; qtyMilli: number }[] {
-  const rows = db
+): Promise<{ batchId: string; qtyMilli: number }[]> {
+  const rows = (await db
     .prepare(
       `SELECT id, qty_remaining_milli, expiry_date FROM batches
        WHERE org_id = ? AND warehouse_id = ? AND product_id = ? AND variant_id IS ? AND qty_remaining_milli > 0`,
     )
-    .all(input.orgId, input.warehouseId, input.productId, input.variantId ?? null) as {
+    .all(input.orgId, input.warehouseId, input.productId, input.variantId ?? null)) as {
     id: string;
     qty_remaining_milli: number;
     expiry_date: number | null;
@@ -630,16 +630,16 @@ export function consumeBatchesFEFO(
     input.qtyMilli,
   );
   for (const a of allocation) {
-    db.prepare(
+    await db.prepare(
       `UPDATE batches SET qty_remaining_milli = MAX(0, qty_remaining_milli - ?) WHERE id = ?`,
     ).run(a.qtyMilli, a.batchId);
   }
   return allocation;
 }
 
-export function expiringBatches(orgId: string, now = Date.now()) {
+export async function expiringBatches(orgId: string, now = Date.now()) {
   const db = getDb();
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT b.*, p.name as product_name, w.name as warehouse_name
        FROM batches b
@@ -648,7 +648,7 @@ export function expiringBatches(orgId: string, now = Date.now()) {
        WHERE b.org_id = ? AND b.expiry_date IS NOT NULL AND b.qty_remaining_milli > 0
        ORDER BY b.expiry_date ASC LIMIT 100`,
     )
-    .all(orgId) as {
+    .all(orgId)) as {
     id: string;
     batch_number: string;
     expiry_date: number;
@@ -678,10 +678,10 @@ export interface StockOverviewRow {
   warehouse_name: string;
 }
 
-export function stockOverview(
+export async function stockOverview(
   orgId: string,
   opts: { warehouseId?: string; search?: string; belowMin?: boolean; limit?: number; offset?: number } = {},
-): { rows: StockOverviewRow[]; total: number } {
+): Promise<{ rows: StockOverviewRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["s.org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -699,7 +699,7 @@ export function stockOverview(
   }
   const limit = Math.min(opts.limit ?? 50, 500);
   const offset = opts.offset ?? 0;
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT s.product_id, s.variant_id, p.name as product_name, p.sku, v.label as variant_label,
               p.unit, s.qty_milli, s.reserved_milli, s.avg_cost_cents, p.reorder_point_milli,
@@ -711,22 +711,22 @@ export function stockOverview(
        WHERE ${where.join(" AND ")}
        ORDER BY p.name LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as StockOverviewRow[];
+    .all(...params, limit, offset)) as StockOverviewRow[];
   const total = (
-    db
+    (await db
       .prepare(
         `SELECT COUNT(*) c FROM stock_levels s JOIN products p ON p.id = s.product_id
          LEFT JOIN product_variants v ON v.id = s.variant_id WHERE ${where.join(" AND ")}`,
       )
-      .get(...params) as { c: number }
+      .get(...params)) as { c: number }
   ).c;
   return { rows, total };
 }
 
-export function stockMovements(
+export async function stockMovements(
   orgId: string,
   opts: { productId?: string; warehouseId?: string; from?: number; to?: number; limit?: number; offset?: number } = {},
-): { rows: MovementRow[]; total: number } {
+): Promise<{ rows: MovementRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["m.org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -748,7 +748,7 @@ export function stockMovements(
   }
   const limit = Math.min(opts.limit ?? 50, 500);
   const offset = opts.offset ?? 0;
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT m.*, p.name as product_name, v.label as variant_label, w.name as warehouse_name
        FROM stock_movements m
@@ -758,9 +758,9 @@ export function stockMovements(
        WHERE ${where.join(" AND ")}
        ORDER BY m.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as MovementRow[];
+    .all(...params, limit, offset)) as MovementRow[];
   const total = (
-    db.prepare(`SELECT COUNT(*) c FROM stock_movements m WHERE ${where.join(" AND ")}`).get(...params) as { c: number }
+    (await db.prepare(`SELECT COUNT(*) c FROM stock_movements m WHERE ${where.join(" AND ")}`).get(...params)) as { c: number }
   ).c;
   return { rows, total };
 }
@@ -785,19 +785,19 @@ export interface MovementRow {
 }
 
 /** Valuation: Σ qty × weighted-average cost (real figures, no estimates). */
-export function stockValuation(orgId: string, warehouseId?: string) {
+export async function stockValuation(orgId: string, warehouseId?: string) {
   const db = getDb();
   const params: (string | number)[] = warehouseId
     ? [orgId, warehouseId]
     : [orgId];
   const clause = warehouseId ? "AND s.warehouse_id = ?" : "";
-  const row = db
+  const row = (await db
     .prepare(
       `SELECT COALESCE(SUM(s.qty_milli * s.avg_cost_cents), 0) value_millicents,
               COUNT(*) positions
        FROM stock_levels s WHERE s.org_id = ? ${clause}`,
     )
-    .get(...params) as { value_millicents: number; positions: number };
+    .get(...params)) as { value_millicents: number; positions: number };
   return {
     valueCents: Math.round(row.value_millicents / 1000),
     positions: row.positions,
@@ -805,9 +805,9 @@ export function stockValuation(orgId: string, warehouseId?: string) {
 }
 
 /** Products with no movement in the period (dead stock). */
-export function noMovementProducts(orgId: string, sinceTs: number, limit = 50) {
+export async function noMovementProducts(orgId: string, sinceTs: number, limit = 50) {
   const db = getDb();
-  return db
+  return (await db
     .prepare(
       `SELECT p.id, p.name, p.sku,
               COALESCE((SELECT SUM(s.qty_milli) FROM stock_levels s WHERE s.org_id = p.org_id AND s.product_id = p.id), 0) as qty_milli
@@ -819,14 +819,14 @@ export function noMovementProducts(orgId: string, sinceTs: number, limit = 50) {
          )
        ORDER BY p.name LIMIT ?`,
     )
-    .all(orgId, sinceTs, limit) as { id: string; name: string; sku: string; qty_milli: number }[];
+    .all(orgId, sinceTs, limit)) as { id: string; name: string; sku: string; qty_milli: number }[];
 }
 
 
 /** Lists transfers with their lines (newest first). */
-export function listTransfers(orgId: string, limit = 40) {
+export async function listTransfers(orgId: string, limit = 40) {
   const db = getDb();
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT t.*, wf.name as from_name, wt.name as to_name, u.name as created_by_label
        FROM stock_transfers t
@@ -836,10 +836,10 @@ export function listTransfers(orgId: string, limit = 40) {
        WHERE t.org_id = ?
        ORDER BY t.created_at DESC LIMIT ?`,
     )
-    .all(orgId, Math.min(limit, 200)) as Record<string, unknown>[];
-  return rows.map((t) => ({
+    .all(orgId, Math.min(limit, 200))) as Record<string, unknown>[];
+  return rows.map(async (t) => ({
     ...t,
-    lines: db
+    lines: await db
       .prepare(
         `SELECT l.id, l.product_id, l.variant_id, l.qty_milli, l.received_qty_milli,
                 p.name as product_name, p.unit, v.label as variant_label

@@ -34,7 +34,7 @@ export const POST = routeHandler(async (body, request) => {
       { status: 400 },
     );
   }
-  const result = createOrganization({
+  const result = await createOrganization({
     name: body.orgName,
     legalName: body.legalName,
     taxId: body.taxId,
@@ -49,7 +49,7 @@ export const POST = routeHandler(async (body, request) => {
     ownerPassword: body.ownerPassword,
   });
 
-  const login = loginWithPassword(body.ownerEmail, body.ownerPassword, {
+  const login = await loginWithPassword(body.ownerEmail, body.ownerPassword, {
     userAgent: request.headers.get("user-agent") ?? undefined,
   });
   const cookieStore = await cookies();
@@ -72,6 +72,6 @@ export const PATCH = routeHandler(async (_body, request) => {
     return Response.json({ ok: false, error: { message: "Não autenticado.", code: "unauthorized" } }, { status: 401 });
   }
   void request;
-  completeOnboarding(ctx.orgId, { userId: ctx.userId, label: ctx.userName });
+  await completeOnboarding(ctx.orgId, { userId: ctx.userId, label: ctx.userName });
   return { completed: true };
 });

@@ -56,13 +56,13 @@ export const POST = routeHandler(async (body, _request, context) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   switch (body.action) {
     case "send":
-      setPurchaseOrderStatus(ctx.orgId, id, "sent", actor);
+      await setPurchaseOrderStatus(ctx.orgId, id, "sent", actor);
       return { status: "sent" };
     case "cancel":
-      setPurchaseOrderStatus(ctx.orgId, id, "cancelled", actor);
+      await setPurchaseOrderStatus(ctx.orgId, id, "cancelled", actor);
       return { status: "cancelled" };
     case "approve":
-      approvePurchaseOrder(ctx.orgId, id, body.decision, body.reason, actor);
+      await approvePurchaseOrder(ctx.orgId, id, body.decision, body.reason, actor);
       return { status: body.decision };
     case "receive":
       return receivePurchaseOrder(ctx.orgId, id, body.lines, {

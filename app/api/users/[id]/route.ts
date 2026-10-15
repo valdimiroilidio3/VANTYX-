@@ -19,13 +19,13 @@ export const PATCH = routeHandler(async (body, _request, context) => {
   const { id } = await context.params;
   const { newPassword, pin, ...patch } = body;
   if (pin !== undefined) {
-    setUserPin(ctx.orgId, id, pin, { userId: ctx.userId, label: ctx.userName });
+    await setUserPin(ctx.orgId, id, pin, { userId: ctx.userId, label: ctx.userName });
   }
   if (Object.keys(patch).length) {
-    updateUser(ctx.orgId, id, patch, { userId: ctx.userId, label: ctx.userName });
+    await updateUser(ctx.orgId, id, patch, { userId: ctx.userId, label: ctx.userName });
   }
   if (newPassword) {
-    changeUserPassword(ctx.orgId, id, newPassword, {
+    await changeUserPassword(ctx.orgId, id, newPassword, {
       userId: ctx.userId,
       label: ctx.userName,
     });

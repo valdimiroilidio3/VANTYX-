@@ -7,11 +7,13 @@ export const dynamic = "force-dynamic";
 
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("restaurant.recipes");
-  const recipes = listRecipes(ctx.orgId) as { id: string }[];
-  return recipes.map((r) => ({
-    ...r,
-    cost: recipeCost(ctx.orgId, r.id),
-  }));
+  const recipes = (await listRecipes(ctx.orgId)) as { id: string }[];
+  return Promise.all(
+    recipes.map(async (r) => ({
+      ...r,
+      cost: await recipeCost(ctx.orgId, r.id),
+    })),
+  );
 });
 
 const schema = z.object({
@@ -31,5 +33,5 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("restaurant.recipes");
-  return { recipeId: createRecipe(ctx.orgId, body) };
+  return { recipeId: await createRecipe(ctx.orgId, body) };
 }, schema);

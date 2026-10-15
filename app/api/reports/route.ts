@@ -23,26 +23,26 @@ export const GET = routeHandler(async (_body, request) => {
   const from = Number(url.searchParams.get("from")) || Date.now() - 29 * 86_400_000;
   const to = Number(url.searchParams.get("to")) || Date.now();
   const branchId = url.searchParams.get("branchId") ?? undefined;
-  const profile = getOrgProfile(ctx.orgId);
+  const profile = await getOrgProfile(ctx.orgId);
   const filter = { from, to, branchId };
   const previousLength = to - from;
 
   return {
     period: { from, to, branchId },
-    summary: comparePeriods(
+    summary: await comparePeriods(
       ctx.orgId,
       filter,
       { from: from - previousLength, to: from, branchId },
     ),
-    byDay: salesByDay(ctx.orgId, filter, profile.timezone),
-    byHour: salesByHour(ctx.orgId, filter, profile.timezone),
-    byBranch: salesByBranch(ctx.orgId, filter),
-    byCategory: marginByCategory(ctx.orgId, filter),
-    byStaff: performanceByUser(ctx.orgId, filter),
-    topProducts: topProducts(ctx.orgId, filter, 20),
-    paymentMix: paymentMix(ctx.orgId, filter),
-    returns: returnRate(ctx.orgId, filter),
-    rotation: stockRotation(ctx.orgId, Math.max(1, Math.round(previousLength / 86_400_000))),
-    cashDifferences: cashDifferences(ctx.orgId, 10),
+    byDay: await salesByDay(ctx.orgId, filter, profile.timezone),
+    byHour: await salesByHour(ctx.orgId, filter, profile.timezone),
+    byBranch: await salesByBranch(ctx.orgId, filter),
+    byCategory: await marginByCategory(ctx.orgId, filter),
+    byStaff: await performanceByUser(ctx.orgId, filter),
+    topProducts: await topProducts(ctx.orgId, filter, 20),
+    paymentMix: await paymentMix(ctx.orgId, filter),
+    returns: await returnRate(ctx.orgId, filter),
+    rotation: await stockRotation(ctx.orgId, Math.max(1, Math.round(previousLength / 86_400_000))),
+    cashDifferences: await cashDifferences(ctx.orgId, 10),
   };
 });

@@ -37,7 +37,7 @@ export const POST = routeHandler(async (body, _request, context) => {
     });
   }
   const ctx = await requirePermission("cash.movement");
-  const movementId = addMovement(ctx.orgId, id, {
+  const movementId = await addMovement(ctx.orgId, id, {
     kind: body.kind,
     amountCents: body.amountCents,
     reasonCode: body.reasonCode,

@@ -16,8 +16,8 @@ export const GET = routeHandler(async (_body, request) => {
   const url = new URL(request.url);
   const branchId = url.searchParams.get("branchId") ?? undefined;
   return {
-    resources: listResources(ctx.orgId, { branchId }),
-    ...listAppointments(ctx.orgId, {
+    resources: await listResources(ctx.orgId, { branchId }),
+    ...await listAppointments(ctx.orgId, {
       branchId,
       resourceId: url.searchParams.get("resourceId") ?? undefined,
       status: url.searchParams.get("status") ?? undefined,
@@ -58,10 +58,10 @@ export const POST = routeHandler(async (body) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   if (body.action === "create_resource") {
     const { action: _a, ...data } = body;
-    const id = createResource(ctx.orgId, data, actor);
+    const id = await createResource(ctx.orgId, data, actor);
     return NextResponse.json({ ok: true, data: { id } }, { status: 201 });
   }
   const { action: _a, ...data } = body;
-  const id = createAppointment(ctx.orgId, data, actor);
+  const id = await createAppointment(ctx.orgId, data, actor);
   return NextResponse.json({ ok: true, data: { id } }, { status: 201 });
 }, schema);

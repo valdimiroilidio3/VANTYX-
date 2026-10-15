@@ -58,7 +58,7 @@ export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("restaurant.floor");
   const actor = { userId: ctx.userId, label: ctx.userName };
   if (body.action === "open") {
-    const result = openOrder(ctx.orgId, { ...body, actor });
+    const result = await openOrder(ctx.orgId, { ...body, actor });
     return NextResponse.json({ ok: true, data: result }, { status: 201 });
   }
   return addOrderItems(ctx.orgId, body.orderId, body.items, actor);

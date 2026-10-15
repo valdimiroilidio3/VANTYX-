@@ -55,7 +55,7 @@ export interface AppointmentRow {
   created_at: number;
 }
 
-export function listResources(orgId: string, opts: { branchId?: string; includeInactive?: boolean } = {}): ResourceRow[] {
+export async function listResources(orgId: string, opts: { branchId?: string; includeInactive?: boolean } = {}): Promise<ResourceRow[]> {
   const db = getDb();
   const where = ["r.org_id = ?"];
   const params: unknown[] = [orgId];
@@ -64,7 +64,7 @@ export function listResources(orgId: string, opts: { branchId?: string; includeI
     where.push("r.branch_id = ?");
     params.push(opts.branchId);
   }
-  return db
+  return (await db
     .prepare(
       `SELECT r.*, b.name as branch_name, u.name as user_name
        FROM service_resources r
@@ -73,27 +73,27 @@ export function listResources(orgId: string, opts: { branchId?: string; includeI
        WHERE ${where.join(" AND ")}
        ORDER BY r.name`,
     )
-    .all(...params) as ResourceRow[];
+    .all(...params)) as ResourceRow[];
 }
 
-export function createResource(
+export async function createResource(
   orgId: string,
   input: { branchId: string; name: string; kind?: string; userId?: string; commissionBps?: number; color?: string },
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
-  const branch = db.prepare(`SELECT id FROM branches WHERE id = ? AND org_id = ?`).get(input.branchId, orgId);
+  const branch = await db.prepare(`SELECT id FROM branches WHERE id = ? AND org_id = ?`).get(input.branchId, orgId);
   if (!branch) badRequest("Filial inválida.");
   const kind = input.kind ?? "staff";
   if (!["staff", "room", "equipment"].includes(kind)) badRequest("Tipo de recurso inválido.");
   const commissionBps = Math.min(Math.max(input.commissionBps ?? 0, 0), 10000);
   const id = newId("sres");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO service_resources (id, org_id, branch_id, user_id, name, kind, commission_bps, color, active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     ).run(id, orgId, input.branchId, input.userId ?? null, input.name.trim(), kind, commissionBps, input.color ?? null, Date.now());
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "resource.create", resourceType: "service_resource", resourceId: id,
@@ -105,7 +105,7 @@ export function createResource(
   return id;
 }
 
-export function listAppointments(
+export async function listAppointments(
   orgId: string,
   opts: { from?: number; to?: number; resourceId?: string; status?: string; branchId?: string; limit?: number; offset?: number } = {},
 ) {
@@ -135,7 +135,7 @@ export function listAppointments(
     params.push(opts.branchId);
   }
   const clause = where.join(" AND ");
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT a.*, r.name as resource_name, r.color as resource_color, b.name as branch_name, p.name as product_name
        FROM appointments a
@@ -145,13 +145,13 @@ export function listAppointments(
        WHERE ${clause}
        ORDER BY a.starts_at LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as AppointmentRow[];
-  const total = (db.prepare(`SELECT COUNT(*) c FROM appointments a WHERE ${clause}`).get(...params) as { c: number }).c;
+    .all(...params, limit, offset)) as AppointmentRow[];
+  const total = ((await db.prepare(`SELECT COUNT(*) c FROM appointments a WHERE ${clause}`).get(...params)) as { c: number }).c;
   return { rows, total };
 }
 
 /** Rejects double-booking server-side: same resource, overlapping window. */
-export function createAppointment(
+export async function createAppointment(
   orgId: string,
   input: {
     resourceId: string;
@@ -165,26 +165,26 @@ export function createAppointment(
     notes?: string;
   },
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
-  const resource = db
+  const resource = (await db
     .prepare(`SELECT id, branch_id FROM service_resources WHERE id = ? AND org_id = ? AND active = 1`)
-    .get(input.resourceId, orgId) as { id: string; branch_id: string } | undefined;
+    .get(input.resourceId, orgId)) as { id: string; branch_id: string } | undefined;
   if (!resource) badRequest("Recurso inválido ou inativo.");
   if (!Number.isFinite(input.startsAt) || input.startsAt <= 0) badRequest("Data/hora de início inválida.");
   const durationMin = Math.min(Math.max(input.durationMin ?? 30, 5), 720);
   if (input.customerId) {
-    const c = db.prepare(`SELECT id FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId);
+    const c = await db.prepare(`SELECT id FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId);
     if (!c) badRequest("Cliente inválido.");
   }
   if (input.productId) {
-    const p = db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(input.productId, orgId);
+    const p = await db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(input.productId, orgId);
     if (!p) badRequest("Serviço/produto inválido.");
   }
   const endsAt = input.startsAt + durationMin * 60_000;
   const id = newId("appt");
-  tx(db, () => {
-    const clash = db
+  await tx(db, async () => {
+    const clash = await db
       .prepare(
         `SELECT id FROM appointments
          WHERE org_id = ? AND resource_id = ? AND status NOT IN ('cancelled','no_show')
@@ -192,7 +192,7 @@ export function createAppointment(
       )
       .get(orgId, input.resourceId, endsAt, input.startsAt);
     if (clash) conflict("Já existe uma marcação sobreposta para este recurso.");
-    db.prepare(
+    await db.prepare(
       `INSERT INTO appointments
        (id, org_id, branch_id, resource_id, customer_id, customer_name, phone, product_id,
         starts_at, duration_min, status, price_cents, notes, created_at)
@@ -202,7 +202,7 @@ export function createAppointment(
       input.customerName.trim(), input.phone ?? null, input.productId ?? null,
       input.startsAt, durationMin, input.priceCents ?? null, input.notes ?? null, Date.now(),
     );
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "appointment.create", resourceType: "appointment", resourceId: id,
@@ -214,23 +214,23 @@ export function createAppointment(
   return id;
 }
 
-export function updateAppointmentStatus(
+export async function updateAppointmentStatus(
   orgId: string,
   id: string,
   status: ApptStatus,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const appt = db.prepare(`SELECT status FROM appointments WHERE id = ? AND org_id = ?`).get(id, orgId) as
+  const appt = (await db.prepare(`SELECT status FROM appointments WHERE id = ? AND org_id = ?`).get(id, orgId)) as
     | { status: ApptStatus }
     | undefined;
   if (!appt) notFound("Marcação");
   if (!APPT_TRANSITIONS[appt.status].includes(status)) {
     badRequest(`Transição inválida: ${appt.status} → ${status}.`);
   }
-  tx(db, () => {
-    db.prepare(`UPDATE appointments SET status = ? WHERE id = ? AND org_id = ?`).run(status, id, orgId);
-    writeAudit(
+  await tx(db, async () => {
+    await db.prepare(`UPDATE appointments SET status = ? WHERE id = ? AND org_id = ?`).run(status, id, orgId);
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "appointment.status", resourceType: "appointment", resourceId: id,

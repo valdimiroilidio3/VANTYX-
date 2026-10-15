@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("settings.view");
-  return listIntegrationStates(ctx.orgId).map((s) => ({
+  return (await listIntegrationStates(ctx.orgId)).map((s) => ({
     key: s.definition.key,
     name: s.definition.name,
     category: s.definition.category,
@@ -46,7 +46,7 @@ export const POST = routeHandler(async (body) => {
   if (body.action === "save") {
     // Secrets themselves are NEVER accepted through this API — only the
     // non-secret config and a boolean stating env credentials exist.
-    saveIntegrationConfig(ctx.orgId, body.key, body.config, body.credentialsSet);
+    await saveIntegrationConfig(ctx.orgId, body.key, body.config, body.credentialsSet);
     return listIntegrationStates(ctx.orgId);
   }
   return testIntegration(ctx.orgId, body.key);

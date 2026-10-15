@@ -21,61 +21,61 @@ export interface OrgModuleState {
   dataRows: number;
 }
 
-export function listOrgModules(orgId: string): OrgModuleState[] {
+export async function listOrgModules(orgId: string): Promise<OrgModuleState[]> {
   const db = getDb();
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT module_id, enabled, config, updated_at FROM org_modules WHERE org_id = ?`,
     )
-    .all(orgId) as {
+    .all(orgId)) as {
     module_id: string;
     enabled: number;
     config: string;
     updated_at: number;
   }[];
   const byId = new Map(rows.map((r) => [r.module_id, r]));
-  return MODULE_REGISTRY.map((module) => {
+  return Promise.all(MODULE_REGISTRY.map(async (module) => {
     const row = byId.get(module.id);
     return {
       module,
       enabled: row ? row.enabled === 1 : false,
       config: row ? (JSON.parse(row.config) as Record<string, unknown>) : {},
       updatedAt: row?.updated_at ?? 0,
-      dataRows: countModuleData(orgId, module),
+      dataRows: await countModuleData(orgId, module),
     };
-  });
+  }));
 }
 
-export function enabledModuleIds(orgId: string): string[] {
+export async function enabledModuleIds(orgId: string): Promise<string[]> {
   const db = getDb();
   return (
-    db
+    (await db
       .prepare(`SELECT module_id FROM org_modules WHERE org_id = ? AND enabled = 1`)
-      .all(orgId) as { module_id: string }[]
+      .all(orgId)) as { module_id: string }[]
   ).map((r) => r.module_id);
 }
 
-export function isModuleEnabled(orgId: string, moduleId: string): boolean {
+export async function isModuleEnabled(orgId: string, moduleId: string): Promise<boolean> {
   const db = getDb();
-  const row = db
+  const row = (await db
     .prepare(
       `SELECT enabled FROM org_modules WHERE org_id = ? AND module_id = ?`,
     )
-    .get(orgId, moduleId) as { enabled: number } | undefined;
+    .get(orgId, moduleId)) as { enabled: number } | undefined;
   return row?.enabled === 1;
 }
 
-export function countModuleData(
+export async function countModuleData(
   orgId: string,
   module: ModuleDefinition,
-): number {
+): Promise<number> {
   const db = getDb();
   let total = 0;
   for (const table of module.dataTables) {
     try {
-      const row = db
+      const row = (await db
         .prepare(`SELECT COUNT(*) c FROM ${table} WHERE org_id = ?`)
-        .get(orgId) as { c: number };
+        .get(orgId)) as { c: number };
       total += row.c;
     } catch {
       // Table may not exist in older schemas — ignore defensively.
@@ -94,18 +94,18 @@ export interface EnableResult {
  * Industry packs can be enabled outside their industry only with `force`
  * (explicit admin decision, audited).
  */
-export function enableModule(
+export async function enableModule(
   orgId: string,
   moduleId: string,
   actor: { userId: string; label: string },
   opts: { force?: boolean } = {},
-): EnableResult {
+): Promise<EnableResult> {
   const mod = getModule(moduleId);
   if (!mod) throw new ApiError(404, `Módulo desconhecido: ${moduleId}`);
 
-  const profile = getDb()
+  const profile = (await getDb()
     .prepare(`SELECT industry FROM org_profiles WHERE org_id = ?`)
-    .get(orgId) as { industry: string } | undefined;
+    .get(orgId)) as { industry: string } | undefined;
   const industryOk =
     mod.industries === "*" ||
     (profile ? (mod.industries as string[]).includes(profile.industry) : false);
@@ -119,28 +119,28 @@ export function enableModule(
 
   const db = getDb();
   const autoEnabled: string[] = [];
-  tx(db, () => {
+  await tx(db, async () => {
     const closure = dependencyClosure([moduleId]);
     const now = Date.now();
     for (const id of closure) {
-      const existing = db
+      const existing = (await db
         .prepare(`SELECT enabled FROM org_modules WHERE org_id = ? AND module_id = ?`)
-        .get(orgId, id) as { enabled: number } | undefined;
+        .get(orgId, id)) as { enabled: number } | undefined;
       if (!existing) {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO org_modules (org_id, module_id, enabled, version, config, enabled_at, updated_at)
            VALUES (?, ?, 1, ?, '{}', ?, ?)`,
         ).run(orgId, id, getModule(id)?.version ?? "1.0.0", now, now);
         if (id !== moduleId) autoEnabled.push(id);
       } else if (existing.enabled !== 1) {
-        db.prepare(
+        await db.prepare(
           `UPDATE org_modules SET enabled = 1, enabled_at = ?, disabled_at = NULL, updated_at = ?
            WHERE org_id = ? AND module_id = ?`,
         ).run(now, now, orgId, id);
         if (id !== moduleId) autoEnabled.push(id);
       }
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor.userId,
@@ -165,15 +165,15 @@ export interface DisablePreview {
 }
 
 /** Preview of consequences BEFORE deactivating (never destroys data). */
-export function previewDisable(orgId: string, moduleId: string): DisablePreview {
+export async function previewDisable(orgId: string, moduleId: string): Promise<DisablePreview> {
   const mod = getModule(moduleId);
   if (!mod) throw new ApiError(404, `Módulo desconhecido: ${moduleId}`);
-  const enabled = enabledModuleIds(orgId);
+  const enabled = await enabledModuleIds(orgId);
   const dependents = dependentsOf(moduleId, enabled)
     .map((id) => getModule(id))
     .filter((m): m is ModuleDefinition => Boolean(m))
     .map((m) => ({ id: m.id, name: m.name }));
-  const dataRows = countModuleData(orgId, mod);
+  const dataRows = await countModuleData(orgId, mod);
   const blocked = dependents.length > 0;
   return {
     moduleId,
@@ -188,13 +188,13 @@ export function previewDisable(orgId: string, moduleId: string): DisablePreview 
   };
 }
 
-export function disableModule(
+export async function disableModule(
   orgId: string,
   moduleId: string,
   actor: { userId: string; label: string },
   opts: { confirmDataLoss?: boolean } = {},
-): void {
-  const preview = previewDisable(orgId, moduleId);
+): Promise<void> {
+  const preview = await previewDisable(orgId, moduleId);
   if (preview.blocked) {
     throw new ApiError(409, preview.reason ?? "Módulo tem dependentes ativos.", "dependents_active");
   }
@@ -206,23 +206,23 @@ export function disableModule(
     );
   }
   const db = getDb();
-  tx(db, () => {
+  await tx(db, async () => {
     const now = Date.now();
-    const existing = db
+    const existing = await db
       .prepare(`SELECT 1 FROM org_modules WHERE org_id = ? AND module_id = ?`)
       .get(orgId, moduleId);
     if (existing) {
-      db.prepare(
+      await db.prepare(
         `UPDATE org_modules SET enabled = 0, disabled_at = ?, updated_at = ?
          WHERE org_id = ? AND module_id = ?`,
       ).run(now, now, orgId, moduleId);
     } else {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO org_modules (org_id, module_id, enabled, version, config, disabled_at, updated_at)
          VALUES (?, ?, 0, '1.0.0', '{}', ?, ?)`,
       ).run(orgId, moduleId, now, now);
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor.userId,
@@ -237,20 +237,20 @@ export function disableModule(
   });
 }
 
-export function setModuleConfig(
+export async function setModuleConfig(
   orgId: string,
   moduleId: string,
   config: Record<string, unknown>,
-): void {
+): Promise<void> {
   const db = getDb();
-  db.prepare(
+  await db.prepare(
     `UPDATE org_modules SET config = ?, updated_at = ? WHERE org_id = ? AND module_id = ?`,
   ).run(JSON.stringify(config), Date.now(), orgId, moduleId);
 }
 
 /** Enabled module ids for the org, expanded with dependencies. */
-export function effectiveModuleIds(orgId: string): Set<string> {
-  return new Set(dependencyClosure(enabledModuleIds(orgId)));
+export async function effectiveModuleIds(orgId: string): Promise<Set<string>> {
+  return new Set(dependencyClosure(await enabledModuleIds(orgId)));
 }
 
 /* ---------- Navigation & dashboard assembly (per user) ---------- */
@@ -269,11 +269,11 @@ export interface NavItem {
  *   enabled modules ∩ routes visible ∩ user permissions.
  * Server-rendered; the client cannot widen it.
  */
-export function navigationFor(
+export async function navigationFor(
   orgId: string,
   permissions: Set<Permission>,
-): NavItem[] {
-  const enabled = enabledModuleIds(orgId);
+): Promise<NavItem[]> {
+  const enabled = await enabledModuleIds(orgId);
   const items: NavItem[] = [];
   for (const moduleId of enabled) {
     const mod = getModule(moduleId);
@@ -315,11 +315,11 @@ export function navigationFor(
 }
 
 /** Widgets available for dashboards: enabled modules ∩ permissions. */
-export function availableWidgetIds(
+export async function availableWidgetIds(
   orgId: string,
   permissions: Set<Permission>,
-): string[] {
-  const enabled = enabledModuleIds(orgId);
+): Promise<string[]> {
+  const enabled = await enabledModuleIds(orgId);
   const widgets: string[] = [];
   for (const moduleId of enabled) {
     const mod = getModule(moduleId);

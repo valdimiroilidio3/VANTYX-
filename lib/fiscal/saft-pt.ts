@@ -56,17 +56,17 @@ export interface SaftResult {
   warnings: string[];
 }
 
-export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResult {
-  const profile = getOrgProfile(orgId);
+export async function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): Promise<SaftResult> {
+  const profile = await getOrgProfile(orgId);
   const settings = profile.settings as Record<string, unknown>;
   const region =
     settings.taxRegion === "PT-AC" || settings.taxRegion === "PT-MA" ? settings.taxRegion : "PT";
   const tz = profile.timezone || "Europe/Lisbon";
   const warnings: string[] = [];
 
-  const org = db
+  const org = (await db
     .prepare(`SELECT name, legal_name, tax_id FROM organizations WHERE id = ?`)
-    .get(orgId) as { name: string; legal_name: string | null; tax_id: string | null };
+    .get(orgId)) as { name: string; legal_name: string | null; tax_id: string | null };
 
   const issuerTin = org.tax_id?.trim() || "";
   if (!issuerTin) warnings.push("NIF do emitente não configurado — preencha em Definições → Fiscal.");
@@ -80,22 +80,22 @@ export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResul
 
   /* ------------------------------ Documentos ------------------------------ */
 
-  const sales = db
+  const sales = (await db
     .prepare(
       `SELECT s.*, c.name AS customer_name, c.tax_id AS customer_tax_id
        FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
        WHERE s.org_id = ? AND s.document_number IS NOT NULL AND s.created_at BETWEEN ? AND ?
        ORDER BY s.document_type, s.sequence_number`,
     )
-    .all(orgId, fromTs, toTs) as Record<string, unknown>[];
+    .all(orgId, fromTs, toTs)) as Record<string, unknown>[];
 
-  const salesLines = db
+  const salesLines = (await db
     .prepare(
       `SELECT sale_id, product_id, name_snapshot, sku_snapshot, qty_milli, unit,
               unit_price_cents, tax_rate_bps, discount_cents, total_cents, tax_cents
        FROM sale_lines WHERE org_id = ? ORDER BY sale_id, sequence`,
     )
-    .all(orgId) as Record<string, unknown>[];
+    .all(orgId)) as Record<string, unknown>[];
   const linesBySale = new Map<string, Record<string, unknown>[]>();
   for (const l of salesLines) {
     const arr = linesBySale.get(String(l.sale_id)) ?? [];
@@ -103,23 +103,23 @@ export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResul
     linesBySale.set(String(l.sale_id), arr);
   }
 
-  const returns = db
+  const returns = (await db
     .prepare(
       `SELECT r.*, s.document_number AS origin_document_number, s.created_at AS origin_created_at
        FROM returns r JOIN sales s ON s.id = r.sale_id
        WHERE r.org_id = ? AND r.document_number IS NOT NULL AND r.created_at BETWEEN ? AND ?
        ORDER BY r.sequence_number`,
     )
-    .all(orgId, fromTs, toTs) as Record<string, unknown>[];
+    .all(orgId, fromTs, toTs)) as Record<string, unknown>[];
 
-  const returnLines = db
+  const returnLines = (await db
     .prepare(
       `SELECT rl.return_id, sl.product_id, sl.name_snapshot, sl.sku_snapshot, rl.qty_milli,
               rl.unit_price_cents, rl.tax_rate_bps, rl.total_cents, rl.tax_cents, sl.unit
        FROM return_lines rl JOIN sale_lines sl ON sl.id = rl.sale_line_id
        WHERE rl.org_id = ? ORDER BY rl.return_id`,
     )
-    .all(orgId) as Record<string, unknown>[];
+    .all(orgId)) as Record<string, unknown>[];
   const linesByReturn = new Map<string, Record<string, unknown>[]>();
   for (const l of returnLines) {
     const arr = linesByReturn.get(String(l.return_id)) ?? [];
@@ -145,7 +145,7 @@ export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResul
   const usedProductIds = new Set<string>();
   for (const l of [...salesLines, ...returnLines]) usedProductIds.add(String(l.product_id));
   const products = usedProductIds.size
-    ? (db
+    ? ((await db
         .prepare(
           `SELECT p.id, p.sku, p.name, p.unit, p.base_price_cents, p.tax_rate_bps, p.type,
                   cat.name AS category_name,
@@ -153,7 +153,7 @@ export function buildSaftPt(db: Db, orgId: string, opts: SaftOptions): SaftResul
            FROM products p LEFT JOIN categories cat ON cat.id = p.category_id
            WHERE p.org_id = ? AND p.id IN (${[...usedProductIds].map(() => "?").join(",")})`,
         )
-        .all(orgId, [...usedProductIds]) as Record<string, unknown>[])
+        .all(orgId, [...usedProductIds])) as Record<string, unknown>[])
     : [];
 
   const taxRates = new Map<number, { bps: number; taxable: number; tax: number }>();

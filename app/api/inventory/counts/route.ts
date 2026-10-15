@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export const GET = routeHandler(async () => {
   const ctx = await requirePermission("inventory.count");
-  return getDb()
+  return await getDb()
     .prepare(
       `SELECT cs.*, w.name as warehouse_name,
         (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.sheet_id = cs.id) as line_count,

@@ -27,6 +27,6 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("suppliers.manage");
-  const supplierId = createSupplier(ctx.orgId, body);
+  const supplierId = await createSupplier(ctx.orgId, body);
   return NextResponse.json({ ok: true, data: { supplierId } }, { status: 201 });
 }, schema);

@@ -14,6 +14,6 @@ export const POST = routeHandler(async (_body, _request, context) => {
 export const DELETE = routeHandler(async (_body, _request, context) => {
   const ctx = await requirePermission("pos.hold");
   const { id } = await context.params;
-  deleteHeldSale(ctx.orgId, id);
+  await deleteHeldSale(ctx.orgId, id);
   return { deleted: id };
 });

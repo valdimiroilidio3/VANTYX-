@@ -13,7 +13,7 @@ import { purchaseSuggestions } from "./purchasing.service";
  * invocation with the same idempotency key, never duplicated blindly.
  */
 
-export function createNotification(
+export async function createNotification(
   orgId: string,
   data: {
     kind: string;
@@ -25,16 +25,16 @@ export function createNotification(
     userId?: string | null;
     dedupeKey?: string;
   },
-): string | null {
+): Promise<string | null> {
   const db = getDb();
   if (data.dedupeKey) {
-    const existing = db
+    const existing = await db
       .prepare(`SELECT id FROM notifications WHERE org_id = ? AND dedupe_key = ?`)
       .get(orgId, data.dedupeKey);
     if (existing) return null; // deduplicated
   }
   const id = newId("ntf");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO notifications (id, org_id, user_id, kind, severity, title, body, ref_type, ref_id, dedupe_key, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
@@ -45,19 +45,19 @@ export function createNotification(
   return id;
 }
 
-export function listNotifications(
+export async function listNotifications(
   orgId: string,
   opts: { unreadOnly?: boolean; limit?: number; offset?: number } = {},
-): { rows: NotificationRow[]; total: number; unread: number } {
+): Promise<{ rows: NotificationRow[]; total: number; unread: number }> {
   const db = getDb();
   const limit = Math.min(opts.limit ?? 30, 200);
   const offset = opts.offset ?? 0;
   const where = opts.unreadOnly ? "org_id = ? AND read_at IS NULL" : "org_id = ?";
-  const rows = db
+  const rows = (await db
     .prepare(`SELECT * FROM notifications WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(orgId, limit, offset) as NotificationRow[];
-  const total = (db.prepare(`SELECT COUNT(*) c FROM notifications WHERE ${where}`).get(orgId) as { c: number }).c;
-  const unread = (db.prepare(`SELECT COUNT(*) c FROM notifications WHERE org_id = ? AND read_at IS NULL`).get(orgId) as { c: number }).c;
+    .all(orgId, limit, offset)) as NotificationRow[];
+  const total = ((await db.prepare(`SELECT COUNT(*) c FROM notifications WHERE ${where}`).get(orgId)) as { c: number }).c;
+  const unread = ((await db.prepare(`SELECT COUNT(*) c FROM notifications WHERE org_id = ? AND read_at IS NULL`).get(orgId)) as { c: number }).c;
   return { rows, total, unread };
 }
 
@@ -75,14 +75,14 @@ export interface NotificationRow {
   created_at: number;
 }
 
-export function markNotificationRead(orgId: string, notificationId: string): void {
-  getDb()
+export async function markNotificationRead(orgId: string, notificationId: string): Promise<void> {
+  await getDb()
     .prepare(`UPDATE notifications SET read_at = ? WHERE id = ? AND org_id = ?`)
     .run(Date.now(), notificationId, orgId);
 }
 
-export function markAllRead(orgId: string): void {
-  getDb()
+export async function markAllRead(orgId: string): Promise<void> {
+  await getDb()
     .prepare(`UPDATE notifications SET read_at = ? WHERE org_id = ? AND read_at IS NULL`)
     .run(Date.now(), orgId);
 }
@@ -106,9 +106,9 @@ export function initNotificationSubscriptions(): void {
   g.__vantyxNotificationsInit = true;
   initialized = true;
 
-  onDomainEvent("stock.below_min", (p) => {
-    if (!isModuleEnabled(p.orgId, "automation")) return;
-    createNotification(p.orgId, {
+  onDomainEvent("stock.below_min", async (p) => {
+    if (!await isModuleEnabled(p.orgId, "automation")) return;
+    await createNotification(p.orgId, {
       kind: "stock.below_min",
       severity: "warning",
       title: `Stock mínimo: ${p.productName}`,
@@ -119,9 +119,9 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("stock.negative", (p) => {
-    if (!isModuleEnabled(p.orgId, "automation")) return;
-    createNotification(p.orgId, {
+  onDomainEvent("stock.negative", async (p) => {
+    if (!await isModuleEnabled(p.orgId, "automation")) return;
+    await createNotification(p.orgId, {
       kind: "stock.negative",
       severity: "critical",
       title: `Stock negativo: ${p.productName}`,
@@ -132,10 +132,10 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("cash.session_closed", (p) => {
-    if (!isModuleEnabled(p.orgId, "automation")) return;
+  onDomainEvent("cash.session_closed", async (p) => {
+    if (!await isModuleEnabled(p.orgId, "automation")) return;
     if (p.differenceCents === 0) return;
-    createNotification(p.orgId, {
+    await createNotification(p.orgId, {
       kind: "cash.difference",
       severity: Math.abs(p.differenceCents) > 500 ? "critical" : "warning",
       title: `Diferença de caixa: ${(p.differenceCents / 100).toFixed(2)} €`,
@@ -145,9 +145,9 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("sale.voided", (p) => {
-    if (!isModuleEnabled(p.orgId, "automation")) return;
-    createNotification(p.orgId, {
+  onDomainEvent("sale.voided", async (p) => {
+    if (!await isModuleEnabled(p.orgId, "automation")) return;
+    await createNotification(p.orgId, {
       kind: "sale.voided",
       severity: "warning",
       title: "Venda anulada",
@@ -157,8 +157,8 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("purchase.approval_required", (p) => {
-    createNotification(p.orgId, {
+  onDomainEvent("purchase.approval_required", async (p) => {
+    await createNotification(p.orgId, {
       kind: "purchase.approval",
       severity: "info",
       title: `Encomenda ${p.poNumber} aguarda aprovação`,
@@ -168,8 +168,8 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("rule.blocked", (p) => {
-    createNotification(p.orgId, {
+  onDomainEvent("rule.blocked", async (p) => {
+    await createNotification(p.orgId, {
       kind: "rule.blocked",
       severity: "info",
       title: `Operação bloqueada pela regra "${p.ruleKey}"`,
@@ -180,8 +180,8 @@ export function initNotificationSubscriptions(): void {
     });
   });
 
-  onDomainEvent("sync.conflict", (p) => {
-    createNotification(p.orgId, {
+  onDomainEvent("sync.conflict", async (p) => {
+    await createNotification(p.orgId, {
       kind: "sync.conflict",
       severity: "critical",
       title: `Conflito de sincronização: ${p.entity}`,
@@ -203,17 +203,17 @@ export interface DailyTaskResult {
  * scan). Idempotent per day — safe to call from dashboards, external cron
  * or retry after failures. Executions are logged in automation_runs.
  */
-export function runDailyTasks(orgId: string, at = Date.now()): DailyTaskResult[] {
+export async function runDailyTasks(orgId: string, at = Date.now()): Promise<DailyTaskResult[]> {
   const db = getDb();
   const idemKey = `daily-${dayKey(at)}`;
-  const existing = db
+  const existing = await db
     .prepare(`SELECT status FROM automation_runs WHERE org_id = ? AND task_key = 'daily_suite' AND idempotency_key = ? AND status = 'success'`)
     .get(orgId, idemKey);
   if (existing) {
     return [{ taskKey: "daily_suite", status: "skipped_idempotent" }];
   }
   const runId = newId("run");
-  db.prepare(
+  await db.prepare(
     `INSERT OR REPLACE INTO automation_runs (id, org_id, task_key, status, idempotency_key, started_at)
      VALUES (?, ?, 'daily_suite', 'running', ?, ?)`,
   ).run(runId, orgId, idemKey, at);
@@ -221,10 +221,10 @@ export function runDailyTasks(orgId: string, at = Date.now()): DailyTaskResult[]
   const results: DailyTaskResult[] = [];
   try {
     // 1. Expiry scan (supermarket/pharmacy/pet packs)
-    const expiring = expiringBatches(orgId, at);
+    const expiring = await expiringBatches(orgId, at);
     let expiryAlerts = 0;
     for (const batch of expiring) {
-      const created = createNotification(orgId, {
+      const created = await createNotification(orgId, {
         kind: "batch.expiring",
         severity: batch.risk === "expired" ? "critical" : "warning",
         title:
@@ -241,9 +241,9 @@ export function runDailyTasks(orgId: string, at = Date.now()): DailyTaskResult[]
     results.push({ taskKey: "expiry_scan", status: "success", detail: `${expiryAlerts} alertas` });
 
     // 2. Replenishment scan
-    const suggestions = purchaseSuggestions(orgId, 30, 100);
+    const suggestions = await purchaseSuggestions(orgId, 30, 100);
     if (suggestions.length > 0) {
-      createNotification(orgId, {
+      await createNotification(orgId, {
         kind: "replenishment",
         severity: "info",
         title: `${suggestions.length} produtos precisam de reposição`,
@@ -253,13 +253,13 @@ export function runDailyTasks(orgId: string, at = Date.now()): DailyTaskResult[]
     }
     results.push({ taskKey: "replenishment_scan", status: "success", detail: `${suggestions.length} sugestões` });
 
-    tx(db, () => {
-      db.prepare(
+    await tx(db, async () => {
+      await db.prepare(
         `UPDATE automation_runs SET status = 'success', finished_at = ?, result = ? WHERE id = ?`,
       ).run(Date.now(), JSON.stringify(results), runId);
     });
   } catch (err) {
-    db.prepare(
+    await db.prepare(
       `UPDATE automation_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ?`,
     ).run(Date.now(), err instanceof Error ? err.message : String(err), runId);
     results.push({ taskKey: "daily_suite", status: "failed", detail: String(err) });
@@ -267,8 +267,8 @@ export function runDailyTasks(orgId: string, at = Date.now()): DailyTaskResult[]
   return results;
 }
 
-export function listAutomationRuns(orgId: string, limit = 20) {
-  return getDb()
+export async function listAutomationRuns(orgId: string, limit = 20) {
+  return await getDb()
     .prepare(`SELECT * FROM automation_runs WHERE org_id = ? ORDER BY started_at DESC LIMIT ?`)
     .all(orgId, limit);
 }

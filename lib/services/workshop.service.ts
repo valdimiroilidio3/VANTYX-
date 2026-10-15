@@ -4,20 +4,20 @@ import { notFound, badRequest } from "@/lib/auth/context";
 import { writeAudit } from "./audit.service";
 
 /** Sequential work-order number per org/year, using the document_series table. */
-function nextWoNumber(db: Db, orgId: string): string {
+async function nextWoNumber(db: Db, orgId: string): Promise<string> {
   const year = new Date().getFullYear();
-  let series = db
+  let series = (await db
     .prepare(`SELECT id, prefix, next_number FROM document_series WHERE org_id = ? AND doc_type = 'WO' AND fiscal_year = ?`)
-    .get(orgId, year) as { id: string; prefix: string; next_number: number } | undefined;
+    .get(orgId, year)) as { id: string; prefix: string; next_number: number } | undefined;
   if (!series) {
     const id = newId("dser");
-    db.prepare(
+    await db.prepare(
       `INSERT INTO document_series (id, org_id, doc_type, prefix, fiscal_year, next_number) VALUES (?, ?, 'WO', 'OS', ?, 1)`,
     ).run(id, orgId, year);
     series = { id, prefix: "OS", next_number: 1 };
   }
   const seq = series.next_number;
-  db.prepare(`UPDATE document_series SET next_number = ? WHERE id = ?`).run(seq + 1, series.id);
+  await db.prepare(`UPDATE document_series SET next_number = ? WHERE id = ?`).run(seq + 1, series.id);
   return `${series.prefix}-${year}/${String(seq).padStart(5, "0")}`;
 }
 
@@ -79,7 +79,7 @@ export interface WorkOrderRow {
   part_count?: number;
 }
 
-export function listWorkOrders(
+export async function listWorkOrders(
   orgId: string,
   opts: { status?: string; search?: string; branchId?: string; limit?: number; offset?: number } = {},
 ) {
@@ -102,7 +102,7 @@ export function listWorkOrders(
     params.push(s, s, s, s);
   }
   const clause = where.join(" AND ");
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT w.*, b.name as branch_name, c.name as customer_name,
               (SELECT COUNT(*) FROM work_order_parts p WHERE p.work_order_id = w.id) as part_count
@@ -112,20 +112,20 @@ export function listWorkOrders(
        WHERE ${clause}
        ORDER BY w.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as WorkOrderRow[];
+    .all(...params, limit, offset)) as WorkOrderRow[];
   const total = (
-    db
+    (await db
       .prepare(
         `SELECT COUNT(*) c FROM work_orders w LEFT JOIN customers c ON c.id = w.customer_id WHERE ${clause}`,
       )
-      .get(...params) as { c: number }
+      .get(...params)) as { c: number }
   ).c;
   return { rows, total };
 }
 
-export function getWorkOrder(orgId: string, id: string) {
+export async function getWorkOrder(orgId: string, id: string) {
   const db = getDb();
-  const wo = db
+  const wo = (await db
     .prepare(
       `SELECT w.*, b.name as branch_name, c.name as customer_name, c.phone as customer_phone
        FROM work_orders w
@@ -133,9 +133,9 @@ export function getWorkOrder(orgId: string, id: string) {
        LEFT JOIN customers c ON c.id = w.customer_id
        WHERE w.id = ? AND w.org_id = ?`,
     )
-    .get(id, orgId) as WorkOrderRow | undefined;
+    .get(id, orgId)) as WorkOrderRow | undefined;
   if (!wo) notFound("Ordem de serviço");
-  const parts = db
+  const parts = await db
     .prepare(
       `SELECT p.*, pr.name as product_name, pr.sku, v.label as variant_label
        FROM work_order_parts p
@@ -147,7 +147,7 @@ export function getWorkOrder(orgId: string, id: string) {
   return { wo, parts };
 }
 
-export function createWorkOrder(
+export async function createWorkOrder(
   orgId: string,
   input: {
     branchId: string;
@@ -162,19 +162,19 @@ export function createWorkOrder(
     parts?: WoPart[];
   },
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
-  const branch = db.prepare(`SELECT id FROM branches WHERE id = ? AND org_id = ?`).get(input.branchId, orgId);
+  const branch = await db.prepare(`SELECT id FROM branches WHERE id = ? AND org_id = ?`).get(input.branchId, orgId);
   if (!branch) badRequest("Filial inválida.");
   if (input.customerId) {
-    const c = db.prepare(`SELECT id FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId);
+    const c = await db.prepare(`SELECT id FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId);
     if (!c) badRequest("Cliente inválido.");
   }
   const parts = input.parts ?? [];
   for (const p of parts) {
     if (p.qtyMilli <= 0) badRequest("Quantidade de peça deve ser positiva.");
     if (p.unitPriceCents < 0) badRequest("Preço de peça não pode ser negativo.");
-    const prod = db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(p.productId, orgId);
+    const prod = await db.prepare(`SELECT id FROM products WHERE id = ? AND org_id = ?`).get(p.productId, orgId);
     if (!prod) badRequest(`Peça/produto inválido: ${p.productId}`);
   }
   const id = newId("wo");
@@ -183,9 +183,9 @@ export function createWorkOrder(
   const laborRateCents = Math.max(input.laborRateCents ?? 0, 0);
   const partsCents = parts.reduce((s, p) => s + Math.round((p.unitPriceCents * p.qtyMilli) / 1000), 0);
   const laborCents = Math.round((laborMinutes / 60) * laborRateCents);
-  tx(db, () => {
-    const woNumber = nextWoNumber(db, orgId);
-    db.prepare(
+  await tx(db, async () => {
+    const woNumber = await nextWoNumber(db, orgId);
+    await db.prepare(
       `INSERT INTO work_orders
        (id, org_id, branch_id, wo_number, customer_id, vehicle_plate, vehicle_info, equipment_serial,
         status, diagnosis, labor_minutes, labor_rate_cents, parts_cents, labor_cents, total_cents,
@@ -199,12 +199,12 @@ export function createWorkOrder(
       actor.userId, now, now,
     );
     for (const p of parts) {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO work_order_parts (id, org_id, work_order_id, product_id, variant_id, qty_milli, unit_price_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(newId("wop"), orgId, id, p.productId, p.variantId ?? null, p.qtyMilli, p.unitPriceCents);
     }
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "work_order.create", resourceType: "work_order", resourceId: id,
@@ -216,24 +216,24 @@ export function createWorkOrder(
   return id;
 }
 
-export function updateWorkOrderStatus(
+export async function updateWorkOrderStatus(
   orgId: string,
   id: string,
   status: WoStatus,
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const wo = db.prepare(`SELECT status FROM work_orders WHERE id = ? AND org_id = ?`).get(id, orgId) as
+  const wo = (await db.prepare(`SELECT status FROM work_orders WHERE id = ? AND org_id = ?`).get(id, orgId)) as
     | { status: WoStatus }
     | undefined;
   if (!wo) notFound("Ordem de serviço");
   if (!WO_TRANSITIONS[wo.status].includes(status)) {
     badRequest(`Transição inválida: ${wo.status} → ${status}.`);
   }
-  tx(db, () => {
-    db.prepare(`UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ? AND org_id = ?`)
+  await tx(db, async () => {
+    await db.prepare(`UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ? AND org_id = ?`)
       .run(status, Date.now(), id, orgId);
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "work_order.status", resourceType: "work_order", resourceId: id,

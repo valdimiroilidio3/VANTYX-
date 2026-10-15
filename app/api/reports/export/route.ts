@@ -15,7 +15,7 @@ export const GET = routeHandler(async (_body, request) => {
   const from = Number(url.searchParams.get("from")) || Date.now() - 29 * 86_400_000;
   const to = Number(url.searchParams.get("to")) || Date.now();
 
-  const rows = getDb()
+  const rows = (await getDb()
     .prepare(
       `SELECT s.document_number, s.status, s.channel,
               datetime(s.created_at/1000, 'unixepoch') as data_hora,
@@ -30,7 +30,7 @@ export const GET = routeHandler(async (_body, request) => {
        WHERE s.org_id = ? AND s.created_at >= ? AND s.created_at < ?
        ORDER BY s.created_at`,
     )
-    .all(ctx.orgId, from, to) as Record<string, string | number | null>[];
+    .all(ctx.orgId, from, to)) as Record<string, string | number | null>[];
 
   const escape = (v: unknown) => {
     const s = v == null ? "" : String(v);
@@ -52,7 +52,7 @@ export const GET = routeHandler(async (_body, request) => {
   const csv = "\uFEFF" + [header, ...lines].join("\n");
 
   const { writeAudit } = await import("@/lib/services/audit.service");
-  writeAudit({
+  await writeAudit({
     orgId: ctx.orgId,
     actorUserId: ctx.userId,
     actorLabel: ctx.userName,

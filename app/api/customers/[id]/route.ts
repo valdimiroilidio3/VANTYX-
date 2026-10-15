@@ -44,11 +44,11 @@ export const POST = routeHandler(async (body, _request, context) => {
   if (body.action === "update") {
     const ctx = await requirePermission("customers.manage");
     const { action: _action, ...patch } = body;
-    updateCustomer(ctx.orgId, id, patch, { userId: ctx.userId, label: ctx.userName });
+    await updateCustomer(ctx.orgId, id, patch, { userId: ctx.userId, label: ctx.userName });
     return getCustomerDetail(ctx.orgId, id);
   }
   const ctx = await requirePermission("customers.data_requests");
-  const requestId = createDataRequest(
+  const requestId = await createDataRequest(
     ctx.orgId,
     id,
     body.kind,

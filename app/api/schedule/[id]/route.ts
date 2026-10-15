@@ -13,6 +13,6 @@ const schema = z.object({
 export const POST = routeHandler(async (body, _request, context) => {
   const ctx = await requirePermission("scheduling.manage");
   const { id } = await context.params;
-  updateAppointmentStatus(ctx.orgId, id, body.status, { userId: ctx.userId, label: ctx.userName });
+  await updateAppointmentStatus(ctx.orgId, id, body.status, { userId: ctx.userId, label: ctx.userName });
   return { updated: id };
 }, schema);

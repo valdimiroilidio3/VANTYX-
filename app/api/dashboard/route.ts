@@ -20,12 +20,12 @@ export const dynamic = "force-dynamic";
 
 const PERIODS: PeriodKey[] = ["today", "yesterday", "7d", "30d"];
 
-function availabilityFor(
+async function availabilityFor(
   orgId: string,
   industry: string,
   permissions: Set<string>,
-): { availability: Record<string, { available: boolean; reason?: string }>; enabled: Set<string> } {
-  const enabled = new Set(enabledModuleIds(orgId));
+): Promise<{ availability: Record<string, { available: boolean; reason?: string }>; enabled: Set<string> }> {
+  const enabled = new Set(await enabledModuleIds(orgId));
   const availability: Record<string, { available: boolean; reason?: string }> = {};
   for (const w of WIDGETS) {
     if (!enabled.has(w.module)) {
@@ -63,11 +63,11 @@ export const GET = routeHandler(async (_body, request) => {
     ? (periodParam as PeriodKey)
     : "today";
 
-  runDailyTasks(ctx.orgId);
+  await runDailyTasks(ctx.orgId);
 
-  const profile = getOrgProfile(ctx.orgId);
+  const profile = await getOrgProfile(ctx.orgId);
   const permissions = new Set<string>(ctx.permissions);
-  const { availability } = availabilityFor(ctx.orgId, profile.industry, permissions);
+  const { availability } = await availabilityFor(ctx.orgId, profile.industry, permissions);
 
   const definitions = new Map(WIDGETS.map((w) => [w.id, w]));
 
@@ -86,9 +86,9 @@ export const GET = routeHandler(async (_body, request) => {
   }
 
   const db = getDb();
-  const pref = db
+  const pref = (await db
     .prepare(`SELECT layout FROM dashboard_preferences WHERE org_id = ? AND user_id = ?`)
-    .get(ctx.orgId, ctx.userId) as { layout: string } | undefined;
+    .get(ctx.orgId, ctx.userId)) as { layout: string } | undefined;
   const savedLayout = pref ? (JSON.parse(pref.layout) as { widgets?: string[] }) : null;
 
   const industry = getIndustry(profile.industry);
@@ -106,7 +106,7 @@ export const GET = routeHandler(async (_body, request) => {
 
   const payloads = fetchWidgets(layout, ctx.orgId, { branchId, period });
   const { current, previous } = periodToFilter(period, profile.timezone, branchId);
-  const summary = comparePeriods(ctx.orgId, current, previous);
+  const summary = await comparePeriods(ctx.orgId, current, previous);
 
   return {
     industry: profile.industry,
@@ -135,12 +135,12 @@ const saveSchema = z.object({
 
 export const PUT = routeHandler(async (body) => {
   const ctx = await requirePermission("notifications.view");
-  const profile = getOrgProfile(ctx.orgId);
+  const profile = await getOrgProfile(ctx.orgId);
   const permissions = new Set<string>(ctx.permissions);
-  const { availability } = availabilityFor(ctx.orgId, profile.industry, permissions);
+  const { availability } = await availabilityFor(ctx.orgId, profile.industry, permissions);
   const db = getDb();
   const valid = body.widgetIds.filter((id) => WIDGETS.some((w) => w.id === id) && availability[id]?.available);
-  db.prepare(
+  await db.prepare(
     `INSERT INTO dashboard_preferences (id, org_id, user_id, layout, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(org_id, user_id) DO UPDATE SET layout = excluded.layout, updated_at = excluded.updated_at`,

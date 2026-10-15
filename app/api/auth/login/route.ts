@@ -22,7 +22,7 @@ export const POST = routeHandler(async (body, request) => {
       "rate_limited",
     );
   }
-  const result = loginWithPassword(body.email, body.password, {
+  const result = await loginWithPassword(body.email, body.password, {
     ip,
     userAgent: request.headers.get("user-agent") ?? undefined,
   });
@@ -34,7 +34,7 @@ export const POST = routeHandler(async (body, request) => {
     path: "/",
     maxAge: SESSION_TTL_MS / 1000,
   });
-  const profile = getOrgProfile(result.orgId);
+  const profile = await getOrgProfile(result.orgId);
   return {
     userId: result.userId,
     orgId: result.orgId,

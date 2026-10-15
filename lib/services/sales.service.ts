@@ -140,30 +140,30 @@ interface VariantSnapshot {
 
 /* ------------------------- Idempotency ---------------------------- */
 
-function findIdempotentResponse(
+async function findIdempotentResponse(
   db: Db,
   orgId: string,
   endpoint: string,
   key: string | null | undefined,
-): CheckoutResult | null {
+): Promise<CheckoutResult | null> {
   if (!key) return null;
-  const row = db
+  const row = (await db
     .prepare(
       `SELECT response FROM idempotency_keys WHERE org_id = ? AND endpoint = ? AND key = ?`,
     )
-    .get(orgId, endpoint, key) as { response: string } | undefined;
+    .get(orgId, endpoint, key)) as { response: string } | undefined;
   return row ? (JSON.parse(row.response) as CheckoutResult) : null;
 }
 
-function storeIdempotentResponse(
+async function storeIdempotentResponse(
   db: Db,
   orgId: string,
   endpoint: string,
   key: string,
   requestHash: string,
   result: CheckoutResult,
-): void {
-  db.prepare(
+): Promise<void> {
+  await db.prepare(
     `INSERT OR IGNORE INTO idempotency_keys (org_id, endpoint, key, request_hash, status_code, response, created_at)
      VALUES (?, ?, ?, ?, 200, ?, ?)`,
   ).run(orgId, endpoint, key, requestHash, JSON.stringify(result), Date.now());
@@ -171,29 +171,29 @@ function storeIdempotentResponse(
 
 /* ------------------------ Document control ------------------------- */
 
-function nextDocumentNumber(
+async function nextDocumentNumber(
   db: Db,
   orgId: string,
   docType: string,
   fiscalYear: number,
-): { seriesId: string; sequence: number; documentNumber: string; atcudValidationCode: string | null } {
-  let series = db
+): Promise<{ seriesId: string; sequence: number; documentNumber: string; atcudValidationCode: string | null }> {
+  let series = (await db
     .prepare(
       `SELECT * FROM document_series WHERE org_id = ? AND doc_type = ? AND fiscal_year = ?`,
     )
-    .get(orgId, docType, fiscalYear) as
+    .get(orgId, docType, fiscalYear)) as
     | { id: string; prefix: string; next_number: number; atcud_validation_code: string | null }
     | undefined;
   if (!series) {
     const id = newId("dser");
-    db.prepare(
+    await db.prepare(
       `INSERT INTO document_series (id, org_id, doc_type, prefix, fiscal_year, next_number)
        VALUES (?, ?, ?, 'VD', ?, 1)`,
     ).run(id, orgId, docType, fiscalYear);
     series = { id, prefix: "VD", next_number: 1, atcud_validation_code: null };
   }
   const sequence = series.next_number;
-  db.prepare(`UPDATE document_series SET next_number = ? WHERE id = ?`).run(
+  await db.prepare(`UPDATE document_series SET next_number = ? WHERE id = ?`).run(
     sequence + 1,
     series.id,
   );
@@ -211,33 +211,33 @@ function nextDocumentNumber(
  * art. 6.º; Despacho 8632/2014): a cadeia segue a numeração sequencial do
  * documento, não o relógio. Null no primeiro documento da série/exercício.
  */
-function lastChainHash(db: Db, orgId: string, docType: string, fiscalYear: number): string | null {
-  const row = db
+async function lastChainHash(db: Db, orgId: string, docType: string, fiscalYear: number): Promise<string | null> {
+  const row = (await db
     .prepare(
       `SELECT hash FROM sales WHERE org_id = ? AND document_type = ? AND fiscal_year = ? AND hash IS NOT NULL
        ORDER BY sequence_number DESC, rowid DESC LIMIT 1`,
     )
-    .get(orgId, docType, fiscalYear) as { hash: string } | undefined;
+    .get(orgId, docType, fiscalYear)) as { hash: string } | undefined;
   return row?.hash ?? null;
 }
 
 /** Cadeia das notas de crédito (tabela returns), por exercício. */
-function lastReturnChainHash(db: Db, orgId: string, fiscalYear: number): string | null {
-  const row = db
+async function lastReturnChainHash(db: Db, orgId: string, fiscalYear: number): Promise<string | null> {
+  const row = (await db
     .prepare(
       `SELECT hash FROM returns WHERE org_id = ? AND fiscal_year = ? AND hash IS NOT NULL
        ORDER BY sequence_number DESC, rowid DESC LIMIT 1`,
     )
-    .get(orgId, fiscalYear) as { hash: string } | undefined;
+    .get(orgId, fiscalYear)) as { hash: string } | undefined;
   return row?.hash ?? null;
 }
 
 /* --------------------------- Rules -------------------------------- */
 
-export function loadEnabledRules(db: Db, orgId: string): BusinessRule[] {
-  const rows = db
+export async function loadEnabledRules(db: Db, orgId: string): Promise<BusinessRule[]> {
+  const rows = (await db
     .prepare(`SELECT * FROM business_rules WHERE org_id = ? AND enabled = 1`)
-    .all(orgId) as {
+    .all(orgId)) as {
     id: string;
     key: string;
     name: string;
@@ -258,7 +258,7 @@ export function loadEnabledRules(db: Db, orgId: string): BusinessRule[] {
   }));
 }
 
-function logRuleExecution(
+async function logRuleExecution(
   db: Db,
   orgId: string,
   ruleId: string,
@@ -268,8 +268,8 @@ function logRuleExecution(
   refId: string | null,
   executedBy: string,
   detail?: string,
-): void {
-  db.prepare(
+): Promise<void> {
+  await db.prepare(
     `INSERT INTO rule_executions (id, org_id, rule_id, context, result, detail, ref_type, ref_id, executed_by, executed_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
@@ -292,22 +292,22 @@ type RuleAbort =
       params: Record<string, unknown>;
     };
 
-export function checkout(input: CheckoutInput): CheckoutResult {
+export async function checkout(input: CheckoutInput): Promise<CheckoutResult> {
   const db = getDb();
-  const orgId = currentOrgId(input.actor.userId);
+  const orgId = await currentOrgId(input.actor.userId);
   const endpoint = "pos.checkout";
 
   // 1. Idempotency (replay protection) — before any work.
-  const cached = findIdempotentResponse(db, orgId, endpoint, input.idempotencyKey);
+  const cached = await findIdempotentResponse(db, orgId, endpoint, input.idempotencyKey);
   if (cached) return { ...cached, replayed: true };
 
   // 2. Offline dedupe by client ref.
   if (input.clientRef) {
-    const existing = db
+    const existing = (await db
       .prepare(`SELECT id FROM sales WHERE org_id = ? AND client_ref = ?`)
-      .get(orgId, input.clientRef) as { id: string } | undefined;
+      .get(orgId, input.clientRef)) as { id: string } | undefined;
     if (existing) {
-      const sale = getSaleById(db, orgId, existing.id)!;
+      const sale = (await getSaleById(db, orgId, existing.id))!;
       return {
         saleId: sale.id,
         documentNumber: sale.document_number,
@@ -321,7 +321,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
   }
 
   if (!input.lines.length) badRequest("Venda sem linhas.");
-  const profile = getOrgProfile(orgId);
+  const profile = await getOrgProfile(orgId);
   const settings = profile.settings;
 
   let result!: CheckoutResult;
@@ -335,7 +335,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
    */
   let ruleAbort: RuleAbort | null = null as RuleAbort | null;
 
-  tx(db, () => {
+  await tx(db, async () => {
     const now = Date.now();
     const fiscalYear = new Date(now).getFullYear();
 
@@ -355,9 +355,9 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       if (!Number.isInteger(line.qtyMilli) || line.qtyMilli <= 0) {
         badRequest("Quantidade inválida numa linha.");
       }
-      const product = db
+      const product = (await db
         .prepare(`SELECT * FROM products WHERE id = ? AND org_id = ?`)
-        .get(line.productId, orgId) as ProductSnapshot | undefined;
+        .get(line.productId, orgId)) as ProductSnapshot | undefined;
       if (!product) notFound(`Produto ${line.productId}`);
       if (product!.status === "archived") {
         conflict(`Produto "${product!.name}" está arquivado.`);
@@ -365,9 +365,9 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       let variant: VariantSnapshot | null = null;
       if (line.variantId) {
         variant =
-          (db
+          ((await db
             .prepare(`SELECT * FROM product_variants WHERE id = ? AND product_id = ? AND org_id = ?`)
-            .get(line.variantId, product!.id, orgId) as VariantSnapshot | undefined) ?? null;
+            .get(line.variantId, product!.id, orgId)) as VariantSnapshot | undefined) ?? null;
         if (!variant) notFound("Variante");
       }
 
@@ -377,7 +377,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       const taxRateBps = variant?.tax_rate_bps ?? product!.tax_rate_bps;
 
       // Period-price promotions override the unit price
-      const promo = resolveActivePromotion(db, orgId, product!.id, variant?.id ?? null, now);
+      const promo = await resolveActivePromotion(db, orgId, product!.id, variant?.id ?? null, now);
       if (promo?.periodPriceCents != null) {
         unitPriceCents = promo.periodPriceCents;
       }
@@ -427,9 +427,9 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     let loyaltyAccount: { id: string; points_balance: number } | null = null;
     if (input.loyaltyRedeemPoints && input.loyaltyRedeemPoints > 0) {
       if (!input.customerId) badRequest("Resgate de pontos exige cliente.");
-      loyaltyAccount = db
+      loyaltyAccount = (await db
         .prepare(`SELECT id, points_balance FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`)
-        .get(orgId, input.customerId) as { id: string; points_balance: number } | null;
+        .get(orgId, input.customerId)) as { id: string; points_balance: number } | null;
       if (!loyaltyAccount) badRequest("Cliente sem conta de fidelização.");
       loyaltyRedeemed = Math.min(input.loyaltyRedeemPoints, loyaltyAccount!.points_balance);
       const loyaltyCfg = (settings.loyalty ?? { pointValueCents: 1 }) as { pointValueCents: number };
@@ -444,7 +444,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     );
 
     /* ---- Business rules (server-side enforcement) ---- */
-    const rules = loadEnabledRules(db, orgId);
+    const rules = await loadEnabledRules(db, orgId);
     const maxLineDiscountBps = Math.max(
       0,
       ...priceInputs.map((p) =>
@@ -477,12 +477,12 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     // Supervisor override clears approval requirements (logged).
     let supervisorId: string | null = null;
     if (resolution.approval && input.supervisor) {
-      if (!loginWithPin(input.supervisor.userId, input.supervisor.pin)) {
+      if (!await loginWithPin(input.supervisor.userId, input.supervisor.pin)) {
         conflict("PIN de supervisor inválido.");
       }
-      const supervisor = db
+      const supervisor = (await db
         .prepare(`SELECT id, name FROM users WHERE id = ? AND org_id = ? AND status='active'`)
-        .get(input.supervisor.userId, orgId) as { id: string; name: string } | undefined;
+        .get(input.supervisor.userId, orgId)) as { id: string; name: string } | undefined;
       if (!supervisor) notFound("Supervisor");
       supervisorId = supervisor!.id;
     }
@@ -514,7 +514,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       return; // aborta a transação; o pedido de aprovação é persistido a seguir
     }
     if (resolution.approval && supervisorId) {
-      logRuleExecution(db, orgId, resolution.approval.ruleId, "allowed", ruleCtx, "sale", null, supervisorId, "Supervisor override via PIN");
+      await logRuleExecution(db, orgId, resolution.approval.ruleId, "allowed", ruleCtx, "sale", null, supervisorId, "Supervisor override via PIN");
     }
     if (resolution.discountCapBps != null) {
       const actual = discountBpsOfSale(pricing.subtotalCents, pricing.discountCents - loyaltyDiscountCents);
@@ -528,9 +528,9 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     }
 
     /* ---- Payments ---- */
-    const methods = db
+    const methods = (await db
       .prepare(`SELECT * FROM payment_methods WHERE org_id = ? AND enabled = 1`)
-      .all(orgId) as { key: string; kind: string; is_cash: number }[];
+      .all(orgId)) as { key: string; kind: string; is_cash: number }[];
     const methodByKey = new Map(methods.map((m) => [m.key, m]));
     let paidConfirmed = 0;
     let changeCents = 0;
@@ -560,27 +560,27 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     let cashSessionId = input.cashSessionId ?? null;
     if (usesCash) {
       if (!cashSessionId) {
-        const open = db
+        const open = (await db
           .prepare(
             `SELECT id FROM cash_sessions WHERE org_id = ? AND branch_id = ? AND status = 'open'
              ${input.terminalId ? "AND terminal_id = ?" : ""}
              ORDER BY opened_at DESC LIMIT 1`,
           )
-          .get(...(input.terminalId ? [orgId, input.branchId, input.terminalId] : [orgId, input.branchId])) as { id: string } | undefined;
+          .get(...(input.terminalId ? [orgId, input.branchId, input.terminalId] : [orgId, input.branchId]))) as { id: string } | undefined;
         cashSessionId = open?.id ?? null;
       }
       if (!cashSessionId) {
         conflict("Nenhuma sessão de caixa aberta neste terminal. Abra a sessão de caixa antes de vender em dinheiro.");
       }
-      const session = db.prepare(`SELECT status FROM cash_sessions WHERE id = ? AND org_id = ?`).get(cashSessionId!, orgId) as { status: string } | undefined;
+      const session = (await db.prepare(`SELECT status FROM cash_sessions WHERE id = ? AND org_id = ?`).get(cashSessionId!, orgId)) as { status: string } | undefined;
       if (!session || session.status !== "open") conflict("Sessão de caixa inválida ou fechada.");
     }
 
     /* ---- Stock ---- */
-    const warehouse = db
+    const warehouse = (await db
       .prepare(`SELECT id FROM warehouses WHERE org_id = ? AND branch_id = ? AND is_default = 1 LIMIT 1`)
-      .get(orgId, input.branchId) as { id: string } | undefined
-      ?? (db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(orgId) as { id: string } | undefined);
+      .get(orgId, input.branchId)) as { id: string } | undefined
+      ?? ((await db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(orgId)) as { id: string } | undefined);
     if (!warehouse) conflict("Organização sem armazém configurado.");
 
     const stockChecks = lineMeta.map((meta) => ({
@@ -590,7 +590,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     for (const check of stockChecks) {
       if (!check.needsStock) continue;
       const lineInput = check.meta.input;
-      assertStockAvailable(
+      await assertStockAvailable(
         db, orgId, warehouse!.id, check.meta.product.id,
         check.meta.variant?.id ?? null, lineInput.qtyMilli, settings,
         check.meta.product.allow_negative,
@@ -598,8 +598,8 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     }
 
     /* ---- Document (numeração + assinatura AT) ---- */
-    const doc = nextDocumentNumber(db, orgId, "FT", fiscalYear);
-    const prevHash = lastChainHash(db, orgId, "FT", fiscalYear);
+    const doc = await nextDocumentNumber(db, orgId, "FT", fiscalYear);
+    const prevHash = await lastChainHash(db, orgId, "FT", fiscalYear);
     const saleId = newId("sale");
     const timeZone = profile.timezone || "Europe/Lisbon";
     const docHash = atHash({
@@ -620,7 +620,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       0,
     );
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO sales
         (id, org_id, branch_id, terminal_id, cash_session_id, customer_id, order_id,
          client_ref, idempotency_key, document_type, document_number, sequence_number,
@@ -648,11 +648,11 @@ export function checkout(input: CheckoutInput): CheckoutResult {
          promotion_id, modifiers, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    lineMeta.forEach((meta, i) => {
+    lineMeta.forEach(async (meta, i) => {
       const priced = pricing.lines[i]!;
       const lineDiscount =
         priced.lineDiscountCents + priced.promoDiscountCents + priced.orderDiscountCents;
-      insertLine.run(
+      await insertLine.run(
         newId("sl"), orgId, saleId, i + 1, meta.product.id, meta.variant?.id ?? null,
         meta.product.name, meta.variant?.sku ?? meta.product.sku,
         meta.input.qtyMilli, meta.product.unit, meta.product.sale_mode,
@@ -677,28 +677,28 @@ export function checkout(input: CheckoutInput): CheckoutResult {
         method.kind === "cash" && payment.tenderedCents != null
           ? computeChange(payment.tenderedCents, payment.amountCents)
           : 0;
-      insertPayment.run(
+      await insertPayment.run(
         newId("sp"), orgId, saleId, payment.methodKey, payment.amountCents,
         payment.tenderedCents ?? null, change, payment.terminalRef ?? null, now, now,
       );
       if (method.kind === "gift_card") {
         // Deduct from card balance (terminalRef carries the card code)
-        const card = db.prepare(`SELECT * FROM gift_cards WHERE org_id = ? AND code = ?`).get(orgId, payment.terminalRef ?? "") as { id: string; balance_cents: number; status: string } | undefined;
+        const card = (await db.prepare(`SELECT * FROM gift_cards WHERE org_id = ? AND code = ?`).get(orgId, payment.terminalRef ?? "")) as { id: string; balance_cents: number; status: string } | undefined;
         if (!card) conflict("Cartão-presente inválido.");
         if (card!.balance_cents < payment.amountCents) conflict("Saldo insuficiente no cartão-presente.");
-        db.prepare(`UPDATE gift_cards SET balance_cents = balance_cents - ?, status = CASE WHEN balance_cents - ? <= 0 THEN 'depleted' ELSE status END WHERE id = ?`)
+        await db.prepare(`UPDATE gift_cards SET balance_cents = balance_cents - ?, status = CASE WHEN balance_cents - ? <= 0 THEN 'depleted' ELSE status END WHERE id = ?`)
           .run(payment.amountCents, payment.amountCents, card!.id);
-        db.prepare(`INSERT INTO gift_card_transactions (id, org_id, card_id, delta_cents, ref_type, ref_id, created_at) VALUES (?, ?, ?, ?, 'sale', ?, ?)`)
+        await db.prepare(`INSERT INTO gift_card_transactions (id, org_id, card_id, delta_cents, ref_type, ref_id, created_at) VALUES (?, ?, ?, ?, 'sale', ?, ?)`)
           .run(newId("gctx"), orgId, card!.id, -payment.amountCents, saleId, now);
       }
       if (method.kind === "customer_credit") {
         if (!input.customerId) badRequest("Conta corrente exige cliente.");
-        const customer = db.prepare(`SELECT credit_limit_cents, credit_balance_cents FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId) as { credit_limit_cents: number; credit_balance_cents: number } | undefined;
+        const customer = (await db.prepare(`SELECT credit_limit_cents, credit_balance_cents FROM customers WHERE id = ? AND org_id = ?`).get(input.customerId, orgId)) as { credit_limit_cents: number; credit_balance_cents: number } | undefined;
         if (!customer) notFound("Cliente");
         if (customer!.credit_balance_cents + payment.amountCents > customer!.credit_limit_cents) {
           conflict("Limite de crédito do cliente excedido.");
         }
-        db.prepare(`UPDATE customers SET credit_balance_cents = credit_balance_cents + ?, updated_at = ? WHERE id = ?`)
+        await db.prepare(`UPDATE customers SET credit_balance_cents = credit_balance_cents + ?, updated_at = ? WHERE id = ?`)
           .run(payment.amountCents, now, input.customerId);
       }
     }
@@ -707,7 +707,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     if (warehouse) {
       for (const meta of lineMeta) {
         if (meta.product.track_stock !== 1) continue;
-        const delta = applyStockDelta(db, {
+        const delta = await applyStockDelta(db, {
           orgId,
           warehouseId: warehouse.id,
           productId: meta.product.id,
@@ -721,14 +721,14 @@ export function checkout(input: CheckoutInput): CheckoutResult {
         });
         pendingEvents.push(...(delta.events as PendingEvent[]));
         if (meta.product.track_batches === 1) {
-          consumeBatchesFEFO(db, {
+          await consumeBatchesFEFO(db, {
             orgId, warehouseId: warehouse.id, productId: meta.product.id,
             variantId: meta.variant?.id ?? null, qtyMilli: meta.input.qtyMilli,
           });
         }
         if (meta.product.track_serials === 1 && meta.input.serialNumbers?.length) {
           for (const serial of meta.input.serialNumbers) {
-            db.prepare(
+            await db.prepare(
               `UPDATE serials SET status = 'sold', sale_id = ?, warehouse_id = NULL WHERE org_id = ? AND serial_number = ?`,
             ).run(saleId, orgId, serial);
           }
@@ -745,9 +745,9 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     };
     if (input.customerId) {
       if (loyaltyRedeemed > 0 && loyaltyAccount) {
-        db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance - ? WHERE id = ?`)
+        await db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance - ? WHERE id = ?`)
           .run(loyaltyRedeemed, loyaltyAccount.id);
-        db.prepare(
+        await db.prepare(
           `INSERT INTO loyalty_transactions (id, org_id, account_id, delta_points, reason, ref_type, ref_id, created_at)
            VALUES (?, ?, ?, ?, 'redeem', 'sale', ?, ?)`,
         ).run(newId("loytx"), orgId, loyaltyAccount.id, -loyaltyRedeemed, saleId, now);
@@ -755,19 +755,19 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       if (loyaltyCfg.enabled && input.loyaltyEarn !== false) {
         loyaltyEarned = Math.floor((pricing.netCents / 100) * (loyaltyCfg.pointsPerEuro ?? 1));
         if (loyaltyEarned > 0) {
-          let account = db.prepare(`SELECT id FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, input.customerId) as { id: string } | undefined;
+          let account = (await db.prepare(`SELECT id FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(orgId, input.customerId)) as { id: string } | undefined;
           if (!account) {
             const accountId = newId("loy");
-            db.prepare(`INSERT INTO loyalty_accounts (id, org_id, customer_id, points_balance, tier, created_at) VALUES (?, ?, ?, 0, 'base', ?)`)
+            await db.prepare(`INSERT INTO loyalty_accounts (id, org_id, customer_id, points_balance, tier, created_at) VALUES (?, ?, ?, 0, 'base', ?)`)
               .run(accountId, orgId, input.customerId, now);
             account = { id: accountId };
           }
-          db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance + ? WHERE id = ?`).run(loyaltyEarned, account.id);
-          db.prepare(
+          await db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance + ? WHERE id = ?`).run(loyaltyEarned, account.id);
+          await db.prepare(
             `INSERT INTO loyalty_transactions (id, org_id, account_id, delta_points, reason, ref_type, ref_id, created_at)
              VALUES (?, ?, ?, ?, 'earn', 'sale', ?, ?)`,
           ).run(newId("loytx"), orgId, account.id, loyaltyEarned, saleId, now);
-          db.prepare(`UPDATE sales SET loyalty_earned = ? WHERE id = ?`).run(loyaltyEarned, saleId);
+          await db.prepare(`UPDATE sales SET loyalty_earned = ? WHERE id = ?`).run(loyaltyEarned, saleId);
         }
       }
     }
@@ -778,36 +778,36 @@ export function checkout(input: CheckoutInput): CheckoutResult {
         // Split bill: mark only the billed order items
         for (const meta of lineMeta) {
           if (meta.input.orderItemId) {
-            db.prepare(
+            await db.prepare(
               `UPDATE r_order_items SET status = 'billed' WHERE id = ? AND order_id = ? AND org_id = ?`,
             ).run(meta.input.orderItemId, input.orderId, orgId);
           }
         }
-        const remaining = db.prepare(
+        const remaining = (await db.prepare(
           `SELECT COUNT(*) c FROM r_order_items WHERE order_id = ? AND org_id = ? AND status NOT IN ('cancelled','billed')`,
-        ).get(input.orderId, orgId) as { c: number };
+        ).get(input.orderId, orgId)) as { c: number };
         if (remaining.c === 0) {
-          db.prepare(`UPDATE r_orders SET status = 'closed', closed_at = ?, sale_id = ? WHERE id = ? AND org_id = ?`)
+          await db.prepare(`UPDATE r_orders SET status = 'closed', closed_at = ?, sale_id = ? WHERE id = ? AND org_id = ?`)
             .run(now, saleId, input.orderId, orgId);
-          const table = db.prepare(`SELECT table_id FROM r_orders WHERE id = ?`).get(input.orderId) as { table_id: string | null } | undefined;
+          const table = (await db.prepare(`SELECT table_id FROM r_orders WHERE id = ?`).get(input.orderId)) as { table_id: string | null } | undefined;
           if (table?.table_id) {
-            db.prepare(`UPDATE r_tables SET status = 'free' WHERE id = ?`).run(table.table_id);
+            await db.prepare(`UPDATE r_tables SET status = 'free' WHERE id = ?`).run(table.table_id);
           }
         }
       } else {
-        db.prepare(`UPDATE r_orders SET status = 'closed', closed_at = ?, sale_id = ? WHERE id = ? AND org_id = ?`)
+        await db.prepare(`UPDATE r_orders SET status = 'closed', closed_at = ?, sale_id = ? WHERE id = ? AND org_id = ?`)
           .run(now, saleId, input.orderId, orgId);
-        db.prepare(`UPDATE r_order_items SET status = 'billed' WHERE order_id = ? AND org_id = ? AND status != 'cancelled'`)
+        await db.prepare(`UPDATE r_order_items SET status = 'billed' WHERE order_id = ? AND org_id = ? AND status != 'cancelled'`)
           .run(input.orderId, orgId);
-        const table = db.prepare(`SELECT table_id FROM r_orders WHERE id = ?`).get(input.orderId) as { table_id: string | null } | undefined;
+        const table = (await db.prepare(`SELECT table_id FROM r_orders WHERE id = ?`).get(input.orderId)) as { table_id: string | null } | undefined;
         if (table?.table_id) {
-          db.prepare(`UPDATE r_tables SET status = 'free' WHERE id = ?`).run(table.table_id);
+          await db.prepare(`UPDATE r_tables SET status = 'free' WHERE id = ?`).run(table.table_id);
         }
       }
     }
 
     /* ---- Audit + idempotency record ---- */
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: input.actor.userId, actorLabel: input.actor.label,
         action: "sale.create", resourceType: "sale", resourceId: saleId,
@@ -834,7 +834,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
     };
 
     if (input.idempotencyKey) {
-      storeIdempotentResponse(
+      await storeIdempotentResponse(
         db, orgId, endpoint, input.idempotencyKey,
         sha256(JSON.stringify({ lines: input.lines.length, total: pricing.totalCents })),
         result,
@@ -845,12 +845,12 @@ export function checkout(input: CheckoutInput): CheckoutResult {
   /* ---- Rule rejection: persist the trace AFTER the sale tx rolled back ---- */
   if (ruleAbort) {
     const abort = ruleAbort;
-    tx(db, () => {
+    await tx(db, async () => {
       if (abort.kind === "blocked") {
         for (const ruleId of abort.ruleIds) {
-          logRuleExecution(db, orgId, ruleId, "blocked", abort.ctx, "sale", null, input.actor.userId, abort.reason);
+          await logRuleExecution(db, orgId, ruleId, "blocked", abort.ctx, "sale", null, input.actor.userId, abort.reason);
         }
-        writeAudit(
+        await writeAudit(
           {
             orgId, actorUserId: input.actor.userId, actorLabel: input.actor.label,
             action: "sale.blocked_by_rule", resourceType: "sale", result: "failure",
@@ -859,11 +859,11 @@ export function checkout(input: CheckoutInput): CheckoutResult {
           db,
         );
       } else {
-        db.prepare(
+        await db.prepare(
           `INSERT INTO approvals (id, org_id, kind, ref_type, params, status, requested_by, created_at)
            VALUES (?, ?, ?, 'sale_pending', ?, 'pending', ?, ?)`,
         ).run(abort.approvalId, orgId, abort.approvalKind, JSON.stringify(abort.params), input.actor.userId, Date.now());
-        logRuleExecution(db, orgId, abort.ruleId, "approval_required", abort.ctx, "approval", abort.approvalId, input.actor.userId, abort.reason);
+        await logRuleExecution(db, orgId, abort.ruleId, "approval_required", abort.ctx, "approval", abort.approvalId, input.actor.userId, abort.reason);
       }
     });
     if (abort.kind === "blocked") {
@@ -883,34 +883,34 @@ export function checkout(input: CheckoutInput): CheckoutResult {
   return result;
 }
 
-function emitAfterCommit(
+async function emitAfterCommit(
   orgId: string,
   saleId: string,
   branchId: string,
   totalCents: number,
   createdBy: string,
   channel: string,
-): void {
-  emitDomainEvent("sale.completed", { orgId, saleId, branchId, totalCents, createdBy, channel });
+): Promise<void> {
+  await emitDomainEvent("sale.completed", { orgId, saleId, branchId, totalCents, createdBy, channel });
 }
 
-function emitInventoryEvent(pending: PendingEvent): void {
+async function emitInventoryEvent(pending: PendingEvent): Promise<void> {
   if (pending.event === "stock.below_min") {
-    emitDomainEvent("stock.below_min", pending.payload as never);
+    await emitDomainEvent("stock.below_min", pending.payload as never);
   } else if (pending.event === "stock.negative") {
-    emitDomainEvent("stock.negative", pending.payload as never);
+    await emitDomainEvent("stock.negative", pending.payload as never);
   }
 }
 
-function currentOrgId(userId: string): string {
-  const row = getDb().prepare(`SELECT org_id FROM users WHERE id = ?`).get(userId) as { org_id: string } | undefined;
+async function currentOrgId(userId: string): Promise<string> {
+  const row = (await getDb().prepare(`SELECT org_id FROM users WHERE id = ?`).get(userId)) as { org_id: string } | undefined;
   if (!row) notFound("Utilizador");
   return row!.org_id;
 }
 
 /* ------------------------- Held sales ------------------------------ */
 
-export function holdSale(
+export async function holdSale(
   orgId: string,
   data: {
     branchId: string;
@@ -920,26 +920,26 @@ export function holdSale(
     label?: string;
     cart: unknown;
   },
-): string {
+): Promise<string> {
   const db = getDb();
   const id = newId("held");
-  db.prepare(
+  await db.prepare(
     `INSERT INTO held_sales (id, org_id, branch_id, terminal_id, user_id, customer_id, label, cart, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, orgId, data.branchId, data.terminalId ?? null, data.userId, data.customerId ?? null, data.label ?? null, JSON.stringify(data.cart), Date.now(), Date.now());
   return id;
 }
 
-export function listHeldSales(orgId: string, branchId?: string) {
+export async function listHeldSales(orgId: string, branchId?: string) {
   const db = getDb();
-  return db
+  return (await db
     .prepare(
       `SELECT h.*, u.name as user_name FROM held_sales h
        LEFT JOIN users u ON u.id = h.user_id
        WHERE h.org_id = ? ${branchId ? "AND h.branch_id = ?" : ""}
        ORDER BY h.updated_at DESC`,
     )
-    .all(...(branchId ? [orgId, branchId] : [orgId])) as HeldSaleRow[];
+    .all(...(branchId ? [orgId, branchId] : [orgId]))) as HeldSaleRow[];
 }
 
 export interface HeldSaleRow {
@@ -956,17 +956,17 @@ export interface HeldSaleRow {
   updated_at: number;
 }
 
-export function resumeHeldSale(orgId: string, heldId: string): { cart: unknown; customerId: string | null } {
+export async function resumeHeldSale(orgId: string, heldId: string): Promise<{ cart: unknown; customerId: string | null }> {
   const db = getDb();
-  const row = db.prepare(`SELECT * FROM held_sales WHERE id = ? AND org_id = ?`).get(heldId, orgId) as HeldSaleRow | undefined;
+  const row = (await db.prepare(`SELECT * FROM held_sales WHERE id = ? AND org_id = ?`).get(heldId, orgId)) as HeldSaleRow | undefined;
   if (!row) notFound("Venda suspensa");
   // Resume removes the hold (cart goes back to the terminal).
-  db.prepare(`DELETE FROM held_sales WHERE id = ?`).run(heldId);
+  await db.prepare(`DELETE FROM held_sales WHERE id = ?`).run(heldId);
   return { cart: JSON.parse(row!.cart), customerId: row!.customer_id };
 }
 
-export function deleteHeldSale(orgId: string, heldId: string): void {
-  getDb().prepare(`DELETE FROM held_sales WHERE id = ? AND org_id = ?`).run(heldId, orgId);
+export async function deleteHeldSale(orgId: string, heldId: string): Promise<void> {
+  await getDb().prepare(`DELETE FROM held_sales WHERE id = ? AND org_id = ?`).run(heldId, orgId);
 }
 
 /* --------------------------- Queries ------------------------------- */
@@ -980,13 +980,13 @@ interface SaleRow {
   loyalty_earned: number;
 }
 
-function getSaleById(db: Db, orgId: string, saleId: string): SaleRow | null {
+async function getSaleById(db: Db, orgId: string, saleId: string): Promise<SaleRow | null> {
   return (
-    (db.prepare(`SELECT id, document_number, status, total_cents, change_cents, loyalty_earned FROM sales WHERE id = ? AND org_id = ?`).get(saleId, orgId) as SaleRow | undefined) ?? null
+    ((await db.prepare(`SELECT id, document_number, status, total_cents, change_cents, loyalty_earned FROM sales WHERE id = ? AND org_id = ?`).get(saleId, orgId)) as SaleRow | undefined) ?? null
   );
 }
 
-export function listSales(
+export async function listSales(
   orgId: string,
   opts: {
     branchId?: string;
@@ -998,7 +998,7 @@ export function listSales(
     limit?: number;
     offset?: number;
   } = {},
-): { rows: SaleListRow[]; total: number } {
+): Promise<{ rows: SaleListRow[]; total: number }> {
   const db = getDb();
   const where: string[] = ["s.org_id = ?"];
   const params: (string | number)[] = [orgId];
@@ -1013,7 +1013,7 @@ export function listSales(
   }
   const limit = Math.min(opts.limit ?? 25, 200);
   const offset = opts.offset ?? 0;
-  const rows = db
+  const rows = (await db
     .prepare(
       `SELECT s.*, c.name as customer_name, u.name as cashier_name, b.name as branch_name,
               (SELECT COUNT(*) FROM sale_lines sl WHERE sl.sale_id = s.id) as line_count,
@@ -1025,8 +1025,8 @@ export function listSales(
        WHERE ${where.join(" AND ")}
        ORDER BY s.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as SaleListRow[];
-  const total = (db.prepare(`SELECT COUNT(*) c FROM sales s LEFT JOIN customers c2 ON c2.id = s.customer_id WHERE ${where.join(" AND ").replace(/\bc\.name\b/g, "c2.name")}`).get(...params) as { c: number }).c;
+    .all(...params, limit, offset)) as SaleListRow[];
+  const total = ((await db.prepare(`SELECT COUNT(*) c FROM sales s LEFT JOIN customers c2 ON c2.id = s.customer_id WHERE ${where.join(" AND ").replace(/\bc\.name\b/g, "c2.name")}`).get(...params)) as { c: number }).c;
   return { rows, total };
 }
 
@@ -1052,9 +1052,9 @@ export interface SaleListRow {
   created_by: string;
 }
 
-export function getSaleDetail(orgId: string, saleId: string) {
+export async function getSaleDetail(orgId: string, saleId: string) {
   const db = getDb();
-  const sale = db.prepare(
+  const sale = await db.prepare(
     `SELECT s.*, c.name as customer_name, c.tax_id as customer_tax_id, u.name as cashier_name,
             b.name as branch_name, t.name as terminal_name
      FROM sales s
@@ -1065,18 +1065,18 @@ export function getSaleDetail(orgId: string, saleId: string) {
      WHERE s.id = ? AND s.org_id = ?`,
   ).get(saleId, orgId);
   if (!sale) notFound("Venda");
-  const lines = db.prepare(
+  const lines = await db.prepare(
     `SELECT sl.*, p.name as product_name, v.label as variant_label
      FROM sale_lines sl
      LEFT JOIN products p ON p.id = sl.product_id
      LEFT JOIN product_variants v ON v.id = sl.variant_id
      WHERE sl.sale_id = ? ORDER BY sl.sequence`,
   ).all(saleId);
-  const payments = db.prepare(`SELECT * FROM sale_payments WHERE sale_id = ?`).all(saleId);
-  const returns = db.prepare(
+  const payments = await db.prepare(`SELECT * FROM sale_payments WHERE sale_id = ?`).all(saleId);
+  const returns = await db.prepare(
     `SELECT r.*, rl.qty_milli as returned_qty FROM returns r LEFT JOIN return_lines rl ON rl.return_id = r.id WHERE r.sale_id = ?`,
   ).all(saleId);
-  const org = db.prepare(`SELECT name, legal_name, tax_id FROM organizations WHERE id = ?`).get(orgId);
+  const org = await db.prepare(`SELECT name, legal_name, tax_id FROM organizations WHERE id = ?`).get(orgId);
   return { sale, lines, payments, returns, org };
 }
 
@@ -1094,19 +1094,19 @@ export interface ReturnInput {
   actor: { userId: string; label: string };
 }
 
-export function createReturn(input: ReturnInput): { returnId: string; documentNumber: string; totalCents: number } {
+export async function createReturn(input: ReturnInput): Promise<{ returnId: string; documentNumber: string; totalCents: number }> {
   const db = getDb();
   if (!input.lines.length) badRequest("Devolução sem linhas.");
   let out!: { returnId: string; documentNumber: string; totalCents: number };
-  tx(db, () => {
+  await tx(db, async () => {
     const now = Date.now();
-    const sale = db.prepare(`SELECT * FROM sales WHERE id = ? AND org_id = ?`).get(input.saleId, input.orgId) as SaleFullRow | undefined;
+    const sale = (await db.prepare(`SELECT * FROM sales WHERE id = ? AND org_id = ?`).get(input.saleId, input.orgId)) as SaleFullRow | undefined;
     if (!sale) notFound("Venda");
     if (sale!.status === "void") conflict("Venda já anulada.");
     if (sale!.status === "returned") conflict("Venda já totalmente devolvida.");
 
     const fiscalYear = new Date(now).getFullYear();
-    const doc = nextDocumentNumber(db, input.orgId, "NC", fiscalYear);
+    const doc = await nextDocumentNumber(db, input.orgId, "NC", fiscalYear);
 
     let subtotalCents = 0;
     let taxCents = 0;
@@ -1119,7 +1119,7 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
     }[] = [];
 
     for (const rl of input.lines) {
-      const line = db.prepare(`SELECT * FROM sale_lines WHERE id = ? AND sale_id = ? AND org_id = ?`).get(rl.saleLineId, input.saleId, input.orgId) as SaleLineRow | undefined;
+      const line = (await db.prepare(`SELECT * FROM sale_lines WHERE id = ? AND sale_id = ? AND org_id = ?`).get(rl.saleLineId, input.saleId, input.orgId)) as SaleLineRow | undefined;
       if (!line) notFound("Linha de venda");
       const alreadyReturned = line!.returned_milli;
       const returnable = line!.qty_milli - alreadyReturned;
@@ -1144,8 +1144,8 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
 
     const returnId = newId("ret");
     // A NC encadeia com a NC anterior da mesma série/exercício (não com a venda).
-    const prevHash = lastReturnChainHash(db, input.orgId, fiscalYear);
-    const profile = getOrgProfile(input.orgId);
+    const prevHash = await lastReturnChainHash(db, input.orgId, fiscalYear);
+    const profile = await getOrgProfile(input.orgId);
     const timeZone = profile.timezone || "Europe/Lisbon";
     const docHash = atHash({
       invoiceDate: atInvoiceDate(now, timeZone),
@@ -1159,7 +1159,7 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
     );
     const atcud = buildAtcud(doc.atcudValidationCode, doc.sequence);
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO returns
         (id, org_id, sale_id, document_number, sequence_number, fiscal_year, status,
          reason_code, restock, warehouse_id, note, subtotal_cents, tax_cents, total_cents,
@@ -1182,15 +1182,15 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
     );
 
     for (const rl of resolvedLines) {
-      insertRl.run(newId("rl"), input.orgId, returnId, rl.line.id, rl.qtyMilli, rl.line.unit_price_cents, rl.line.tax_rate_bps, rl.totalCents, rl.taxCents, rl.restock ? 1 : 0);
-      db.prepare(`UPDATE sale_lines SET returned_milli = returned_milli + ? WHERE id = ?`).run(rl.qtyMilli, rl.line.id);
+      await insertRl.run(newId("rl"), input.orgId, returnId, rl.line.id, rl.qtyMilli, rl.line.unit_price_cents, rl.line.tax_rate_bps, rl.totalCents, rl.taxCents, rl.restock ? 1 : 0);
+      await db.prepare(`UPDATE sale_lines SET returned_milli = returned_milli + ? WHERE id = ?`).run(rl.qtyMilli, rl.line.id);
 
       if (rl.restock) {
         const warehouseId =
           input.warehouseId ??
-          (db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(input.orgId) as { id: string } | undefined)?.id;
+          ((await db.prepare(`SELECT id FROM warehouses WHERE org_id = ? AND is_default = 1 LIMIT 1`).get(input.orgId)) as { id: string } | undefined)?.id;
         if (warehouseId) {
-          applyStockDelta(db, {
+          await applyStockDelta(db, {
             orgId: input.orgId,
             warehouseId,
             productId: rl.line.product_id,
@@ -1206,28 +1206,28 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
       }
     }
     for (const payment of input.payments) {
-      insertRp.run(newId("rp"), input.orgId, returnId, payment.methodKey, payment.amountCents);
+      await insertRp.run(newId("rp"), input.orgId, returnId, payment.methodKey, payment.amountCents);
       if (payment.methodKey === "gift_card") {
         // refund back onto card requires card code — not supported via generic refunds
       }
     }
 
     // Sale status
-    const fullyReturned = db.prepare(
+    const fullyReturned = (await db.prepare(
       `SELECT COALESCE(SUM(returned_milli),0) returned, (SELECT COALESCE(SUM(qty_milli),0) FROM sale_lines WHERE sale_id = ?) total
        FROM sale_lines WHERE sale_id = ?`,
-    ).get(input.saleId, input.saleId) as { returned: number; total: number };
+    ).get(input.saleId, input.saleId)) as { returned: number; total: number };
     const newStatus = fullyReturned.returned >= fullyReturned.total ? "returned" : "partially_returned";
-    db.prepare(`UPDATE sales SET status = ? WHERE id = ?`).run(newStatus, input.saleId);
+    await db.prepare(`UPDATE sales SET status = ? WHERE id = ?`).run(newStatus, input.saleId);
 
     // Loyalty clawback (clamp at zero, recorded as adjustment)
     if (sale!.loyalty_earned > 0 && sale!.customer_id) {
-      const account = db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(input.orgId, sale!.customer_id) as { id: string; points_balance: number } | undefined;
+      const account = (await db.prepare(`SELECT * FROM loyalty_accounts WHERE org_id = ? AND customer_id = ?`).get(input.orgId, sale!.customer_id)) as { id: string; points_balance: number } | undefined;
       if (account) {
         const claw = Math.min(account.points_balance, sale!.loyalty_earned);
         if (claw > 0) {
-          db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance - ? WHERE id = ?`).run(claw, account.id);
-          db.prepare(
+          await db.prepare(`UPDATE loyalty_accounts SET points_balance = points_balance - ? WHERE id = ?`).run(claw, account.id);
+          await db.prepare(
             `INSERT INTO loyalty_transactions (id, org_id, account_id, delta_points, reason, ref_type, ref_id, note, created_at)
              VALUES (?, ?, ?, ?, 'adjust', 'return', ?, 'Clawback por devolução', ?)`,
           ).run(newId("loytx"), input.orgId, account.id, -claw, returnId, now);
@@ -1235,7 +1235,7 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
       }
     }
 
-    writeAudit(
+    await writeAudit(
       {
         orgId: input.orgId, actorUserId: input.actor.userId, actorLabel: input.actor.label,
         action: "sale.return", resourceType: "return", resourceId: returnId,
@@ -1247,7 +1247,7 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
     out = { returnId, documentNumber: doc.documentNumber, totalCents };
   });
 
-  emitDomainEvent("sale.returned", {
+  await emitDomainEvent("sale.returned", {
     orgId: input.orgId,
     returnId: out.returnId,
     saleId: input.saleId,
@@ -1283,20 +1283,20 @@ interface SaleLineRow {
  * Anulação de venda: fiscal-safe — issues a full credit note (NC) and
  * marks the sale void. Documents are never silently deleted or edited.
  */
-export function voidSale(
+export async function voidSale(
   orgId: string,
   saleId: string,
   reason: string,
   actor: { userId: string; label: string },
-): { documentNumber: string } {
+): Promise<{ documentNumber: string }> {
   if (!reason?.trim()) badRequest("Motivo de anulação é obrigatório.");
   const db = getDb();
-  const sale = db.prepare(`SELECT * FROM sales WHERE id = ? AND org_id = ?`).get(saleId, orgId) as SaleFullRow | undefined;
+  const sale = (await db.prepare(`SELECT * FROM sales WHERE id = ? AND org_id = ?`).get(saleId, orgId)) as SaleFullRow | undefined;
   if (!sale) notFound("Venda");
   if (sale!.status === "void") conflict("Venda já anulada.");
   if (sale!.status === "returned") conflict("Venda já devolvida — não pode ser anulada.");
 
-  const lines = db.prepare(`SELECT id, qty_milli, returned_milli FROM sale_lines WHERE sale_id = ?`).all(saleId) as { id: string; qty_milli: number; returned_milli: number }[];
+  const lines = (await db.prepare(`SELECT id, qty_milli, returned_milli FROM sale_lines WHERE sale_id = ?`).all(saleId)) as { id: string; qty_milli: number; returned_milli: number }[];
   const returnLines = lines
     .filter((l) => l.qty_milli - l.returned_milli > 0)
     .map((l) => ({ saleLineId: l.id, qtyMilli: l.qty_milli - l.returned_milli, restock: true }));
@@ -1305,13 +1305,13 @@ export function voidSale(
   // through the same methods; cash refunds happen at the terminal).
   // For partially-returned sales, payments are scaled to the remaining
   // refundable total so the credit note always balances exactly.
-  const originalPayments = db
+  const originalPayments = (await db
     .prepare(`SELECT method_key, amount_cents FROM sale_payments WHERE sale_id = ? AND status = 'confirmed'`)
-    .all(saleId) as { method_key: string; amount_cents: number }[];
-  const refundableTotal = (() => {
-    const rows = db
+    .all(saleId)) as { method_key: string; amount_cents: number }[];
+  const refundableTotal = await (async () => {
+    const rows = (await db
       .prepare(`SELECT qty_milli, returned_milli, total_cents FROM sale_lines WHERE sale_id = ?`)
-      .all(saleId) as { qty_milli: number; returned_milli: number; total_cents: number }[];
+      .all(saleId)) as { qty_milli: number; returned_milli: number; total_cents: number }[];
     return rows.reduce(
       (acc, l) => acc + Math.round((l.total_cents * (l.qty_milli - l.returned_milli)) / l.qty_milli),
       0,
@@ -1329,7 +1329,7 @@ export function voidSale(
     return { methodKey: p.method_key, amountCents: Math.max(0, scaled) };
   }).filter((p) => p.amountCents > 0);
 
-  const result = createReturn({
+  const result = await createReturn({
     orgId,
     saleId,
     lines: returnLines,
@@ -1340,10 +1340,10 @@ export function voidSale(
     actor,
   });
 
-  tx(db, () => {
-    db.prepare(`UPDATE sales SET status = 'void', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`)
+  await tx(db, async () => {
+    await db.prepare(`UPDATE sales SET status = 'void', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`)
       .run(reason, actor.userId, Date.now(), saleId);
-    writeAudit(
+    await writeAudit(
       {
         orgId, actorUserId: actor.userId, actorLabel: actor.label,
         action: "sale.void", resourceType: "sale", resourceId: saleId,
@@ -1353,14 +1353,14 @@ export function voidSale(
     );
   });
 
-  emitDomainEvent("sale.voided", { orgId, saleId, reason, by: actor.userId });
+  await emitDomainEvent("sale.voided", { orgId, saleId, reason, by: actor.userId });
   return { documentNumber: result.documentNumber };
 }
 
 /** Receipt view-model for (re)printing — reprint is permission-gated. */
-export function receiptViewModel(orgId: string, saleId: string) {
-  const detail = getSaleDetail(orgId, saleId);
-  const profile = getOrgProfile(orgId);
+export async function receiptViewModel(orgId: string, saleId: string) {
+  const detail = await getSaleDetail(orgId, saleId);
+  const profile = await getOrgProfile(orgId);
   const sale = detail.sale as Record<string, unknown> & {
     document_number: string | null;
     document_type: string | null;

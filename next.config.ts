@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Native SQLite driver must not be bundled by webpack/turbopack
-  serverExternalPackages: ["better-sqlite3"],
+  serverExternalPackages: ["@libsql/client"],
   images: {
     // Assets locais já dimensionados; evita dependência do otimizador (sharp)
     unoptimized: true,

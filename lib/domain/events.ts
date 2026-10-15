@@ -113,16 +113,16 @@ export function offDomainEvent<K extends DomainEventName>(
 }
 
 /** Fire-and-forget emit with per-handler error isolation. */
-export function emitDomainEvent<K extends DomainEventName>(
+export async function emitDomainEvent<K extends DomainEventName>(
   event: K,
   payload: DomainEventMap[K],
-): void {
+): Promise<void> {
   const list = handlers.get(event) ?? [];
   for (const handler of list) {
     try {
       const result = (handler as Handler<DomainEventMap[K]>)(payload);
       if (result instanceof Promise) {
-        result.catch((err) => {
+        await result.catch((err) => {
           console.error(`[events] handler failed for ${event}`, err);
         });
       }

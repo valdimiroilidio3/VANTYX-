@@ -11,8 +11,8 @@ import type { Migration } from "../migrate";
 export const migration004FiscalAt: Migration = {
   id: "004_fiscal_at",
   name: "AT fiscal columns: hash_control, atcud, series validation code",
-  up(db) {
-    db.exec(`
+  async up(db) {
+    await db.exec(`
 ALTER TABLE sales ADD COLUMN hash_control TEXT;
 ALTER TABLE sales ADD COLUMN atcud TEXT;
 ALTER TABLE returns ADD COLUMN hash_control TEXT;

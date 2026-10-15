@@ -105,10 +105,10 @@ export interface CreateOrganizationResult {
  * modules, payment methods, document series and business rules.
  * Everything happens in ONE transaction (all-or-nothing bootstrap).
  */
-export function createOrganization(
+export async function createOrganization(
   input: CreateOrganizationInput,
   actor?: { userId: string; label: string },
-): CreateOrganizationResult {
+): Promise<CreateOrganizationResult> {
   if (!input.name?.trim()) badRequest("Nome da organização é obrigatório.");
   if (!input.ownerEmail?.includes("@")) badRequest("Email do proprietário inválido.");
   if (!isIndustryKey(input.industry)) badRequest(`Setor desconhecido: ${input.industry}`);
@@ -122,13 +122,13 @@ export function createOrganization(
   const terminalId = newId("trm");
   const ownerUserId = newId("usr");
 
-  const duplicate = db
+  const duplicate = await db
     .prepare(`SELECT id FROM organizations WHERE lower(name) = lower(?)`)
     .get(input.name.trim());
   if (duplicate) throw new ApiError(409, "Já existe uma organização com este nome.", "duplicate_org");
 
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO organizations (id, name, legal_name, tax_id, status, demo, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
     ).run(
@@ -141,7 +141,7 @@ export function createOrganization(
       now,
     );
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO org_profiles
         (org_id, industry, sub_industry, country, currency, locale, timezone,
          tax_regime, prices_include_tax, default_tax_bps, settings, onboarded_at, updated_at)
@@ -162,7 +162,7 @@ export function createOrganization(
     const ownerRoleId = newId("role");
     for (const template of ROLE_TEMPLATES) {
       const roleId = template.key === "owner" ? ownerRoleId : newId("role");
-      db.prepare(
+      await db.prepare(
         `INSERT INTO roles (id, org_id, key, name, description, is_system, created_at)
          VALUES (?, ?, ?, ?, ?, 1, ?)`,
       ).run(roleId, orgId, template.key, template.name, template.description, now);
@@ -170,11 +170,11 @@ export function createOrganization(
         `INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`,
       );
       for (const p of template.permissions as Permission[]) {
-        stmt.run(roleId, p);
+        await stmt.run(roleId, p);
       }
     }
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO users (id, org_id, email, name, password_hash, role_id, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     ).run(
@@ -188,17 +188,17 @@ export function createOrganization(
       now,
     );
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO branches (id, org_id, name, code, is_default, status, created_at)
        VALUES (?, ?, ?, '01', 1, 'active', ?)`,
     ).run(branchId, orgId, input.branchName?.trim() || "Loja Principal", now);
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO warehouses (id, org_id, branch_id, name, code, is_default, created_at)
        VALUES (?, ?, ?, 'Armazém Principal', 'WH01', 1, ?)`,
     ).run(warehouseId, orgId, branchId, now);
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO terminals (id, org_id, branch_id, name, code, kind, status, created_at)
        VALUES (?, ?, ?, 'Terminal 1', 'T01', 'pos', 'active', ?)`,
     ).run(terminalId, orgId, branchId, now);
@@ -210,7 +210,7 @@ export function createOrganization(
        VALUES (?, ?, 1, ?, '{}', ?, ?)`,
     );
     for (const moduleId of modules) {
-      insertModule.run(orgId, moduleId, getModule(moduleId)?.version ?? "1.0.0", now, now);
+      await insertModule.run(orgId, moduleId, getModule(moduleId)?.version ?? "1.0.0", now, now);
     }
 
     // Payment methods
@@ -231,7 +231,7 @@ export function createOrganization(
     for (const key of industry.defaultPaymentMethods) {
       const m = methodNames[key];
       if (!m) continue;
-      insertPm.run(newId("pm"), orgId, key, m.name, m.kind, m.isCash, order++);
+      await insertPm.run(newId("pm"), orgId, key, m.name, m.kind, m.isCash, order++);
     }
 
     // Document series (fiscal year 2026 onward; created lazily per year too)
@@ -241,7 +241,7 @@ export function createOrganization(
        VALUES (?, ?, ?, ?, ?, 1)`,
     );
     for (const docType of ["FT", "FR", "NC", "GT", "RC"]) {
-      insertSeries.run(newId("dser"), orgId, docType, "VD", year);
+      await insertSeries.run(newId("dser"), orgId, docType, "VD", year);
     }
 
     // Seed business rules for the industry
@@ -250,7 +250,7 @@ export function createOrganization(
        VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, 1, ?, ?)`,
     );
     for (const rule of industry.seedRules) {
-      insertRule.run(
+      await insertRule.run(
         newId("rule"),
         orgId,
         rule.key,
@@ -264,7 +264,7 @@ export function createOrganization(
       );
     }
 
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor?.userId ?? null,
@@ -295,17 +295,17 @@ export function createOrganization(
 
 /* --------------------------- Profile --------------------------- */
 
-export function getOrgProfile(orgId: string): OrgProfileView {
+export async function getOrgProfile(orgId: string): Promise<OrgProfileView> {
   const db = getDb();
-  const org = db
+  const org = (await db
     .prepare(`SELECT id, name, legal_name, tax_id, demo FROM organizations WHERE id = ?`)
-    .get(orgId) as
+    .get(orgId)) as
     | { id: string; name: string; legal_name: string | null; tax_id: string | null; demo: number }
     | undefined;
   if (!org) throw new ApiError(404, "Organização não encontrada.");
-  const profile = db
+  const profile = (await db
     .prepare(`SELECT * FROM org_profiles WHERE org_id = ?`)
-    .get(orgId) as {
+    .get(orgId)) as {
     industry: IndustryKey;
     sub_industry: string | null;
     country: string;
@@ -341,12 +341,12 @@ export function getOrgProfile(orgId: string): OrgProfileView {
   };
 }
 
-export function completeOnboarding(orgId: string, actor?: { userId: string; label: string }): void {
+export async function completeOnboarding(orgId: string, actor?: { userId: string; label: string }): Promise<void> {
   const db = getDb();
-  tx(db, () => {
-    db.prepare(`UPDATE org_profiles SET onboarded_at = ?, updated_at = ? WHERE org_id = ?`)
+  await tx(db, async () => {
+    await db.prepare(`UPDATE org_profiles SET onboarded_at = ?, updated_at = ? WHERE org_id = ?`)
       .run(Date.now(), Date.now(), orgId);
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor?.userId ?? null,
@@ -360,15 +360,15 @@ export function completeOnboarding(orgId: string, actor?: { userId: string; labe
   });
 }
 
-export function updateOrgIdentity(
+export async function updateOrgIdentity(
   orgId: string,
   patch: { name?: string; legalName?: string; taxId?: string },
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const before = db.prepare(`SELECT name, legal_name, tax_id FROM organizations WHERE id = ?`).get(orgId);
-  tx(db, () => {
-    db.prepare(
+  const before = await db.prepare(`SELECT name, legal_name, tax_id FROM organizations WHERE id = ?`).get(orgId);
+  await tx(db, async () => {
+    await db.prepare(
       `UPDATE organizations SET
          name = COALESCE(?, name),
          legal_name = COALESCE(?, legal_name),
@@ -376,7 +376,7 @@ export function updateOrgIdentity(
          updated_at = ?
        WHERE id = ?`,
     ).run(patch.name ?? null, patch.legalName ?? null, patch.taxId ?? null, Date.now(), orgId);
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor.userId,
@@ -392,7 +392,7 @@ export function updateOrgIdentity(
   });
 }
 
-export function updateProfileLocale(
+export async function updateProfileLocale(
   orgId: string,
   patch: {
     country?: string;
@@ -405,11 +405,11 @@ export function updateProfileLocale(
     defaultTaxBps?: number;
   },
   actor: { userId: string; label: string },
-): void {
+): Promise<void> {
   const db = getDb();
-  const before = db.prepare(`SELECT * FROM org_profiles WHERE org_id = ?`).get(orgId);
-  tx(db, () => {
-    db.prepare(
+  const before = await db.prepare(`SELECT * FROM org_profiles WHERE org_id = ?`).get(orgId);
+  await tx(db, async () => {
+    await db.prepare(
       `UPDATE org_profiles SET
          country = COALESCE(?, country),
          currency = COALESCE(?, currency),
@@ -433,7 +433,7 @@ export function updateProfileLocale(
       Date.now(),
       orgId,
     );
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor.userId,
@@ -449,19 +449,19 @@ export function updateProfileLocale(
   });
 }
 
-export function mergeProfileSettings(
+export async function mergeProfileSettings(
   orgId: string,
   patch: OrgSettings,
   actor?: { userId: string; label: string },
-): OrgSettings {
+): Promise<OrgSettings> {
   const db = getDb();
-  const profile = getOrgProfile(orgId);
+  const profile = await getOrgProfile(orgId);
   const merged = { ...profile.settings, ...patch };
-  tx(db, () => {
-    db.prepare(`UPDATE org_profiles SET settings = ?, updated_at = ? WHERE org_id = ?`)
+  await tx(db, async () => {
+    await db.prepare(`UPDATE org_profiles SET settings = ?, updated_at = ? WHERE org_id = ?`)
       .run(JSON.stringify(merged), Date.now(), orgId);
     if (actor) {
-      writeAudit(
+      await writeAudit(
         {
           orgId,
           actorUserId: actor.userId,
@@ -496,19 +496,19 @@ export interface IndustryChangePreview {
  * The preview shows exactly what changes; applying it requires explicit
  * confirmation. Historical sales/products/customers are preserved as-is.
  */
-export function previewIndustryChange(
+export async function previewIndustryChange(
   orgId: string,
   toIndustry: string,
-): IndustryChangePreview {
+): Promise<IndustryChangePreview> {
   if (!isIndustryKey(toIndustry)) badRequest(`Setor desconhecido: ${toIndustry}`);
-  const profile = getOrgProfile(orgId);
+  const profile = await getOrgProfile(orgId);
   const target = getIndustry(toIndustry)!;
   const db = getDb();
 
   const currentEnabled = (
-    db
+    (await db
       .prepare(`SELECT module_id FROM org_modules WHERE org_id = ? AND enabled = 1`)
-      .all(orgId) as { module_id: string }[]
+      .all(orgId)) as { module_id: string }[]
   ).map((r) => r.module_id);
   const targetModules = dependencyClosure(target.defaultModules);
   const modulesToEnable = targetModules.filter((m) => !currentEnabled.includes(m));
@@ -521,7 +521,7 @@ export function previewIndustryChange(
     let rows = 0;
     for (const table of def.dataTables) {
       try {
-        const row = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE org_id = ?`).get(orgId) as { c: number };
+        const row = (await db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE org_id = ?`).get(orgId)) as { c: number };
         rows += row.c;
       } catch {
         /* table missing — ignore */
@@ -563,13 +563,13 @@ export function previewIndustryChange(
   };
 }
 
-export function applyIndustryChange(
+export async function applyIndustryChange(
   orgId: string,
   toIndustry: string,
   confirmation: string,
   actor: { userId: string; label: string },
-): IndustryChangePreview {
-  const preview = previewIndustryChange(orgId, toIndustry);
+): Promise<IndustryChangePreview> {
+  const preview = await previewIndustryChange(orgId, toIndustry);
   const expected = `MUDAR-${preview.toIndustry.toUpperCase()}`;
   if (confirmation !== expected) {
     throw new ApiError(
@@ -580,12 +580,12 @@ export function applyIndustryChange(
   }
   const db = getDb();
   const now = Date.now();
-  tx(db, () => {
+  await tx(db, async () => {
     // 1. Update profile industry (settings are merged, not replaced)
     const target = getIndustry(toIndustry)!;
-    const profile = getOrgProfile(orgId);
+    const profile = await getOrgProfile(orgId);
     const mergedSettings = { ...profile.settings, ...target.defaultSettings };
-    db.prepare(
+    await db.prepare(
       `UPDATE org_profiles SET industry = ?, settings = ?, updated_at = ? WHERE org_id = ?`,
     ).run(target.key, JSON.stringify(mergedSettings), now, orgId);
 
@@ -597,7 +597,7 @@ export function applyIndustryChange(
          enabled = 1, enabled_at = excluded.enabled_at, updated_at = excluded.updated_at`,
     );
     for (const moduleId of preview.modulesToEnable) {
-      insertModule.run(orgId, moduleId, getModule(moduleId)?.version ?? "1.0.0", now, now);
+      await insertModule.run(orgId, moduleId, getModule(moduleId)?.version ?? "1.0.0", now, now);
     }
 
     // 3. Seed new industry rules that don't exist yet
@@ -607,14 +607,14 @@ export function applyIndustryChange(
        ON CONFLICT(org_id, key) DO NOTHING`,
     );
     for (const rule of target.seedRules) {
-      insertRule.run(
+      await insertRule.run(
         newId("rule"), orgId, rule.key, rule.name, rule.description,
         JSON.stringify(rule.condition), JSON.stringify(rule.action),
         rule.priority, now, now,
       );
     }
 
-    writeAudit(
+    await writeAudit(
       {
         orgId,
         actorUserId: actor.userId,
@@ -638,10 +638,10 @@ export function applyIndustryChange(
 
 /* -------------------- Structure management --------------------- */
 
-export function listBranches(orgId: string) {
-  return getDb()
+export async function listBranches(orgId: string) {
+  return (await getDb()
     .prepare(`SELECT * FROM branches WHERE org_id = ? ORDER BY code`)
-    .all(orgId) as BranchRow[];
+    .all(orgId)) as BranchRow[];
 }
 
 export interface BranchRow {
@@ -659,31 +659,31 @@ export interface BranchRow {
   created_at: number;
 }
 
-export function createBranch(
+export async function createBranch(
   orgId: string,
   data: { name: string; code: string; address?: string; city?: string; phone?: string; withWarehouse?: boolean; withTerminal?: boolean },
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
   const branchId = newId("br");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO branches (id, org_id, name, code, address, city, phone, is_default, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'active', ?)`,
     ).run(branchId, orgId, data.name.trim(), data.code.trim().toUpperCase(), data.address ?? null, data.city ?? null, data.phone ?? null, Date.now());
     if (data.withWarehouse !== false) {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO warehouses (id, org_id, branch_id, name, code, is_default, created_at)
          VALUES (?, ?, ?, ?, ?, 0, ?)`,
       ).run(newId("wh"), orgId, branchId, `Armazém ${data.name.trim()}`, `WH-${data.code.trim().toUpperCase()}`, Date.now());
     }
     if (data.withTerminal !== false) {
-      db.prepare(
+      await db.prepare(
         `INSERT INTO terminals (id, org_id, branch_id, name, code, kind, status, created_at)
          VALUES (?, ?, ?, ?, ?, 'pos', 'active', ?)`,
       ).run(newId("trm"), orgId, branchId, `Terminal ${data.code.trim().toUpperCase()}`, `T-${data.code.trim().toUpperCase()}`, Date.now());
     }
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "branch.create", resourceType: "branch", resourceId: branchId, after: data },
       db,
     );
@@ -691,14 +691,14 @@ export function createBranch(
   return branchId;
 }
 
-export function listWarehouses(orgId: string) {
-  return getDb()
+export async function listWarehouses(orgId: string) {
+  return (await getDb()
     .prepare(
       `SELECT w.*, b.name as branch_name FROM warehouses w
        LEFT JOIN branches b ON b.id = w.branch_id
        WHERE w.org_id = ? ORDER BY w.code`,
     )
-    .all(orgId) as WarehouseRow[];
+    .all(orgId)) as WarehouseRow[];
 }
 
 export interface WarehouseRow {
@@ -712,14 +712,14 @@ export interface WarehouseRow {
   created_at: number;
 }
 
-export function listTerminals(orgId: string) {
-  return getDb()
+export async function listTerminals(orgId: string) {
+  return (await getDb()
     .prepare(
       `SELECT t.*, b.name as branch_name FROM terminals t
        JOIN branches b ON b.id = t.branch_id
        WHERE t.org_id = ? ORDER BY t.code`,
     )
-    .all(orgId) as TerminalRow[];
+    .all(orgId)) as TerminalRow[];
 }
 
 export interface TerminalRow {
@@ -734,19 +734,19 @@ export interface TerminalRow {
   created_at: number;
 }
 
-export function createTerminal(
+export async function createTerminal(
   orgId: string,
   data: { branchId: string; name: string; code: string; kind: string },
   actor: { userId: string; label: string },
-): string {
+): Promise<string> {
   const db = getDb();
   const id = newId("trm");
-  tx(db, () => {
-    db.prepare(
+  await tx(db, async () => {
+    await db.prepare(
       `INSERT INTO terminals (id, org_id, branch_id, name, code, kind, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
     ).run(id, orgId, data.branchId, data.name.trim(), data.code.trim().toUpperCase(), data.kind, Date.now());
-    writeAudit(
+    await writeAudit(
       { orgId, actorUserId: actor.userId, actorLabel: actor.label, action: "terminal.create", resourceType: "terminal", resourceId: id, after: data },
       db,
     );

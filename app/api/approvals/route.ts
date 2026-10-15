@@ -25,7 +25,7 @@ const schema = z.object({
 
 export const POST = routeHandler(async (body) => {
   const ctx = await requirePermission("purchasing.approve");
-  decideApproval(ctx.orgId, body.approvalId, body.decision, body.reason, {
+  await decideApproval(ctx.orgId, body.approvalId, body.decision, body.reason, {
     userId: ctx.userId,
     label: ctx.userName,
   });

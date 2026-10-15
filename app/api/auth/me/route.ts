@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const GET = routeHandler(async () => {
   const ctx = await getAuthContext();
   if (!ctx) return { authenticated: false };
-  const profile = getOrgProfile(ctx.orgId);
+  const profile = await getOrgProfile(ctx.orgId);
   return {
     authenticated: true,
     user: {
@@ -36,15 +36,15 @@ export const GET = routeHandler(async () => {
       settings: profile.settings,
       onboarded: profile.onboardedAt != null,
     },
-    modules: enabledModuleIds(ctx.orgId),
-    navigation: navigationFor(ctx.orgId, ctx.permissions),
-    branches: listBranches(ctx.orgId).map((b) => ({
+    modules: await enabledModuleIds(ctx.orgId),
+    navigation: await navigationFor(ctx.orgId, ctx.permissions),
+    branches: (await listBranches(ctx.orgId)).map((b) => ({
       id: b.id,
       name: b.name,
       code: b.code,
       isDefault: b.is_default === 1,
     })),
-    terminals: listTerminals(ctx.orgId).map((t) => ({
+    terminals: (await listTerminals(ctx.orgId)).map((t) => ({
       id: t.id,
       name: t.name,
       code: t.code,

@@ -40,16 +40,16 @@ function fmtMoney(cents: number, currency: string): string {
   return `${(cents / 100).toLocaleString("pt-PT", { minimumFractionDigits: 2 })} ${currency}`;
 }
 
-export function dailyBrief(orgId: string, branchId?: string): DailyBrief {
-  const profile = getOrgProfile(orgId);
+export async function dailyBrief(orgId: string, branchId?: string): Promise<DailyBrief> {
+  const profile = await getOrgProfile(orgId);
   const currency = profile.currency;
   const tz = profile.timezone;
   const now = Date.now();
   const today = dayBounds(tz, now, 0);
   const yesterday = dayBounds(tz, now, -1);
 
-  const todaySummary = salesSummary(orgId, { from: today.start, to: now, branchId });
-  const comparison = comparePeriods(
+  const todaySummary = await salesSummary(orgId, { from: today.start, to: now, branchId });
+  const comparison = await comparePeriods(
     orgId,
     { from: today.start, to: now, branchId },
     { from: yesterday.start, to: yesterday.start + (now - today.start), branchId },
@@ -91,7 +91,7 @@ export function dailyBrief(orgId: string, branchId?: string): DailyBrief {
     kind: "estimate",
   });
 
-  const top = topProducts(orgId, { from: today.start, to: now, branchId }, 3);
+  const top = await topProducts(orgId, { from: today.start, to: now, branchId }, 3);
   if (top.length) {
     sections.push({
       title: "Mais vendidos hoje",
@@ -103,7 +103,7 @@ export function dailyBrief(orgId: string, branchId?: string): DailyBrief {
     });
   }
 
-  const suggestions = purchaseSuggestions(orgId, 30, 5);
+  const suggestions = await purchaseSuggestions(orgId, 30, 5);
   if (suggestions.length) {
     sections.push({
       title: "Reposição sugerida",
@@ -120,7 +120,7 @@ export function dailyBrief(orgId: string, branchId?: string): DailyBrief {
     });
   }
 
-  const dead = noMovementProducts(orgId, now - 60 * 86_400_000, 3);
+  const dead = await noMovementProducts(orgId, now - 60 * 86_400_000, 3);
   if (dead.length) {
     sections.push({
       title: "Sem movimento (60 dias)",
@@ -130,7 +130,7 @@ export function dailyBrief(orgId: string, branchId?: string): DailyBrief {
     });
   }
 
-  const valuation = stockValuation(orgId);
+  const valuation = await stockValuation(orgId);
   sections.push({
     title: "Inventário",
     facts: [
@@ -171,11 +171,11 @@ export interface AnomalyReport {
  * Z-score anomaly detection over daily revenue (last 28 days).
  * Statistical signal only — explicitly not a conclusion.
  */
-export function detectAnomalies(orgId: string, windowDays = 28): AnomalyReport {
-  const profile = getOrgProfile(orgId);
+export async function detectAnomalies(orgId: string, windowDays = 28): Promise<AnomalyReport> {
+  const profile = await getOrgProfile(orgId);
   const now = Date.now();
   const from = dayBounds(profile.timezone, now, -windowDays).start;
-  const days = salesByDay(orgId, { from, to: now }, profile.timezone);
+  const days = await salesByDay(orgId, { from, to: now }, profile.timezone);
   if (days.length < 7) {
     return {
       method: "z-score sobre receita diária",
@@ -228,13 +228,13 @@ export interface NlSearchResult {
  * Deterministic intent matching — an optional LLM adapter can extend it
  * when credentials are configured (never required).
  */
-export function nlSearch(
+export async function nlSearch(
   orgId: string,
   query: string,
   permissions: { reports: boolean; inventory: boolean; customers: boolean },
-): NlSearchResult {
+): Promise<NlSearchResult> {
   const q = query.toLowerCase().trim();
-  const profile = getOrgProfile(orgId);
+  const profile = await getOrgProfile(orgId);
   const now = Date.now();
 
   if (!permissions.reports && !permissions.inventory && !permissions.customers) {
@@ -253,7 +253,7 @@ export function nlSearch(
           : when === "semana"
             ? { from: dayBounds(profile.timezone, now, -6).start, to: now }
             : { from: dayBounds(profile.timezone, now, -29).start, to: now };
-    const summary = salesSummary(orgId, filter);
+    const summary = await salesSummary(orgId, filter);
     return {
       intent: "sales_summary",
       answer: `Receita bruta ${fmtMoney(summary.grossCents, profile.currency)} · ${summary.transactions} transações · ticket médio ${fmtMoney(summary.avgTicketCents, profile.currency)} · margem estimada ${(summary.estimatedMarginBps / 100).toFixed(1)}%.`,
@@ -266,14 +266,14 @@ export function nlSearch(
   const stockMatch = q.match(/stock\s+(de|do|da)\s+(.+)/);
   if (stockMatch && permissions.inventory) {
     const term = `%${stockMatch[2]!.trim()}%`;
-    const rows = getDb()
+    const rows = (await getDb()
       .prepare(
         `SELECT p.name, p.sku, COALESCE(SUM(s.qty_milli),0) qty_milli, p.unit
          FROM products p LEFT JOIN stock_levels s ON s.product_id = p.id AND s.org_id = p.org_id
          WHERE p.org_id = ? AND (p.name LIKE ? OR p.sku LIKE ?)
          GROUP BY p.id ORDER BY p.name LIMIT 10`,
       )
-      .all(orgId, term, term) as { name: string; sku: string; qty_milli: number; unit: string }[];
+      .all(orgId, term, term)) as { name: string; sku: string; qty_milli: number; unit: string }[];
     if (!rows.length) {
       return { intent: "stock_query", answer: "Nenhum produto encontrado com esse termo.", data: [], source: "products" };
     }
@@ -287,7 +287,7 @@ export function nlSearch(
 
   // "top produtos"
   if (/top|mais vend/.test(q) && permissions.reports) {
-    const top = topProducts(orgId, { from: dayBounds(profile.timezone, now, -29).start, to: now }, 5);
+    const top = await topProducts(orgId, { from: dayBounds(profile.timezone, now, -29).start, to: now }, 5);
     return {
       intent: "top_products",
       answer: top.length

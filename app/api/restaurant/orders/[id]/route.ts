@@ -38,13 +38,13 @@ export const POST = routeHandler(async (body, _request, context) => {
   const actor = { userId: ctx.userId, label: ctx.userName };
   switch (body.action) {
     case "cancel_item":
-      cancelOrderItem(ctx.orgId, body.itemId, body.reason, actor);
+      await cancelOrderItem(ctx.orgId, body.itemId, body.reason, actor);
       return getOrderDetail(ctx.orgId, id);
     case "move_table":
-      moveOrderToTable(ctx.orgId, id, body.toTableId, actor);
+      await moveOrderToTable(ctx.orgId, id, body.toTableId, actor);
       return getOrderDetail(ctx.orgId, id);
     case "cancel_order":
-      cancelOrder(ctx.orgId, id, body.reason, actor);
+      await cancelOrder(ctx.orgId, id, body.reason, actor);
       return { cancelled: id };
   }
 }, schema);

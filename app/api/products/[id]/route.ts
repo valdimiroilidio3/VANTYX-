@@ -57,6 +57,6 @@ const patchSchema = z.object({
 export const PATCH = routeHandler(async (body, _request, context) => {
   const ctx = await requirePermission("products.manage");
   const { id } = await context.params;
-  updateProduct(ctx.orgId, id, body, { userId: ctx.userId, label: ctx.userName });
+  await updateProduct(ctx.orgId, id, body, { userId: ctx.userId, label: ctx.userName });
   return getProductDetail(ctx.orgId, id);
 }, patchSchema);
