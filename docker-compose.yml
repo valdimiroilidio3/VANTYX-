@@ -1,0 +1,18 @@
+services:
+  vantyx:
+    build: .
+    image: vantyx:latest
+    container_name: vantyx
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      VANTYX_DB_PATH: /data/vantyx.db
+      # opcional — assistente IA (nunca commitar chaves reais):
+      # VANTYX_LLM_API_KEY: ${VANTYX_LLM_API_KEY}
+    volumes:
+      - vantyx-data:/data
+
+volumes:
+  vantyx-data:

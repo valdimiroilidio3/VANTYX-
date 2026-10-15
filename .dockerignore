@@ -1,0 +1,17 @@
+.git
+.github
+.next
+node_modules
+data
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+npm-debug.log*
+.DS_Store
+.arena
+.cache
+coverage
+Dockerfile
+docker-compose.yml
+.env*
