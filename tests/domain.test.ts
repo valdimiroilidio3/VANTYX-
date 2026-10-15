@@ -25,11 +25,17 @@ import {
 } from "@/lib/domain/barcode";
 import { ean13CheckDigit, isValidEan13 } from "@/lib/domain/ean13";
 import {
-  canonicalString,
+  atGrossTotal,
+  atHash,
+  atHashControl,
+  atHashPayload,
+  atHashPrintable,
+  atInvoiceDate,
+  atSystemEntryDate,
+  buildAtcud,
+  buildQrString,
   formatDocumentNumber,
-  hashDocument,
-  internalDocumentCode,
-  verifyChainEntry,
+  qrRegionTotals,
 } from "@/lib/domain/fiscal";
 import { calculateSale, computeChange } from "@/lib/domain/pricing";
 import { evaluateRules, type BusinessRule } from "@/lib/domain/rules-engine";
@@ -156,47 +162,154 @@ describe("barcode / EAN-13", () => {
 
 /* -------------------------------- fiscal -------------------------------- */
 
-describe("fiscal (integridade documental)", () => {
-  const doc = {
-    docType: "FT",
-    documentNumber: "FT VD/1",
-    totalCents: 1230,
-    taxCents: 230,
-    createdAt: 1_700_000_000_000,
-    status: "completed",
-  };
-
-  it("canonicalString é estável independentemente da ordem das chaves", () => {
-    const a = canonicalString({ x: 1, y: "z" });
-    const b = canonicalString({ y: "z", x: 1 });
-    expect(a).toBe(b);
+describe("fiscal AT (Portaria 363/2010 + 195/2020)", () => {
+  it("payload SHA-1: 5 elementos concatenados por \";\" (Despacho 8632/2014)", () => {
+    expect(
+      atHashPayload({
+        invoiceDate: "2019-08-12",
+        systemEntryDate: "2019-08-12T10:30:00",
+        invoiceNo: "FT VD/1",
+        grossTotal: "0.80",
+        prevHash: null,
+      }),
+    ).toBe("2019-08-12;2019-08-12T10:30:00;FT VD/1;0.80;");
   });
 
-  it("hashDocument é determinístico e sensível a qualquer alteração", () => {
-    const h1 = hashDocument(doc, null);
-    const h2 = hashDocument({ ...doc }, null);
-    expect(h1).toBe(h2);
-    expect(hashDocument({ ...doc, totalCents: 1231 }, null)).not.toBe(h1);
-    expect(hashDocument(doc, "prev-hash")).not.toBe(h1);
+  it("atHash = Base-64 do SHA-1 (vetor de referência), 28 chars, determinístico", () => {
+    const first = {
+      invoiceDate: "2019-08-12",
+      systemEntryDate: "2019-08-12T10:30:00",
+      invoiceNo: "FT VD/1",
+      grossTotal: "0.80",
+      prevHash: null,
+    };
+    // vetor calculado independentemente: sha1("2019-08-12;2019-08-12T10:30:00;FT VD/1;0.80;")
+    expect(atHash(first)).toBe("3qFd73AKNvOno9JS+EH5zDSmBWA=");
+    expect(atHash(first)).toBe(atHash({ ...first }));
+    // elo seguinte referencia o hash anterior (vetor: sha1 do payload com prev)
+    const second = {
+      invoiceDate: "2019-08-12",
+      systemEntryDate: "2019-08-12T10:31:00",
+      invoiceNo: "FT VD/2",
+      grossTotal: "1.23",
+      prevHash: "3qFd73AKNvOno9JS+EH5zDSmBWA=",
+    };
+    expect(atHash(second)).toMatch(/^[A-Za-z0-9+/]{27}=$/);
+    expect(atHash(second)).not.toBe(atHash(first));
   });
 
-  it("verifyChainEntry valida o elo e deteta adulteração", () => {
-    const prev = "a".repeat(64);
-    const h = hashDocument(doc, prev);
-    expect(verifyChainEntry(doc, prev, h)).toBe(true);
-    expect(verifyChainEntry({ ...doc, taxCents: 999 }, prev, h)).toBe(false);
+  it("sensível a qualquer alteração dos campos assinados", () => {
+    const base = {
+      invoiceDate: "2019-08-12",
+      systemEntryDate: "2019-08-12T10:30:00",
+      invoiceNo: "FT VD/1",
+      grossTotal: "0.80",
+      prevHash: null,
+    };
+    const h = atHash(base);
+    expect(atHash({ ...base, grossTotal: "0.81" })).not.toBe(h);
+    expect(atHash({ ...base, invoiceNo: "FT VD/2" })).not.toBe(h);
+    expect(atHash({ ...base, systemEntryDate: "2019-08-12T10:30:01" })).not.toBe(h);
+    expect(atHash({ ...base, prevHash: "2jmj7l5rSw0yVb/vlWAYkK/YBwk=" })).not.toBe(h);
   });
 
-  it("formatDocumentNumber segue o formato PT '<tipo> <prefixo>/<seq>'", () => {
+  it("formatos AT: datas, montantes e 4 chars da assinatura", () => {
+    expect(atGrossTotal(12345)).toBe("123.45");
+    expect(atGrossTotal(5)).toBe("0.05");
+    // 2019-08-12T12:00:00+01:00 (Lisboa, WEST) → 11:00 UTC
+    const ts = Date.parse("2019-08-12T12:00:00+01:00");
+    expect(atInvoiceDate(ts, "Europe/Lisbon")).toBe("2019-08-12");
+    expect(atSystemEntryDate(ts, "Europe/Lisbon")).toBe("2019-08-12T12:00:00");
+    expect(atSystemEntryDate(ts, "UTC")).toBe("2019-08-12T11:00:00");
+    expect(atHashPrintable("3qFd73AKNvOno9JS+EH5zDSmBWA=")).toBe("3qFd");
+  });
+
+  it("HashControl: null sem certificado; '<número>.<versão>' com certificado", () => {
+    expect(atHashControl(null)).toBeNull();
+    expect(atHashControl("")).toBeNull();
+    expect(atHashControl("9999")).toBe("9999.1");
+    expect(atHashControl(1234, 2)).toBe("1234.2");
+  });
+
+  it("ATCUD: null sem código de validação AT; '<código>-<seq>' com código ≥8 chars", () => {
+    expect(buildAtcud(null, 35)).toBeNull();
+    expect(buildAtcud("ABC123", 35)).toBeNull(); // < 8 chars → nunca inventar
+    expect(buildAtcud("CSDF7T5H", 35)).toBe("CSDF7T5H-35");
+  });
+
+  it("formatDocumentNumber segue o formato SAF-T '<tipo> <série>/<seq>'", () => {
     expect(formatDocumentNumber("FT", "VD", 143)).toBe("FT VD/143");
     expect(formatDocumentNumber("NC", "CBR", 7)).toBe("NC CBR/7");
   });
 
-  it("internalDocumentCode é determinístico (ATCUD real exige validação AT)", () => {
-    const c1 = internalDocumentCode("dser_1", 42);
-    expect(c1).toBe(internalDocumentCode("dser_1", 42));
-    expect(c1).toBe("dser_1-42");
-    expect(internalDocumentCode("dser_1", 43)).not.toBe(c1);
+  it("qrRegionTotals classifica taxas PT (isenta/reduzida/intermédia/normal)", () => {
+    const t = qrRegionTotals("PT", {
+      "0": { taxableCents: 500, taxCents: 0 },
+      "600": { taxableCents: 1000, taxCents: 60 },
+      "1300": { taxableCents: 2000, taxCents: 260 },
+      "2300": { taxableCents: 3000, taxCents: 690 },
+    });
+    expect(t).toEqual({
+      exemptBaseCents: 500,
+      reducedBaseCents: 1000, reducedTaxCents: 60,
+      intermediateBaseCents: 2000, intermediateTaxCents: 260,
+      normalBaseCents: 3000, normalTaxCents: 690,
+    });
+  });
+
+  it("buildQrString reproduz o exemplo oficial 2 das especificações AT (fatura simplificada)", () => {
+    // Especificações técnicas QR Code, Portaria 195/2020, v1.1 — Example 2
+    const qr = buildQrString({
+      issuerTin: "123456789",
+      customerTin: null, // consumidor final → 999999990
+      customerCountry: "PT",
+      invoiceType: "FS",
+      invoiceStatus: "N",
+      documentTs: Date.parse("2019-08-12T12:00:00+01:00"),
+      timeZone: "Europe/Lisbon",
+      invoiceNo: "FS CDVF/12345",
+      atcud: "CDF7T5HD-12345",
+      regions: {
+        PT: {
+          exemptBaseCents: 0,
+          reducedBaseCents: 0, reducedTaxCents: 0,
+          intermediateBaseCents: 0, intermediateTaxCents: 0,
+          normalBaseCents: 65, normalTaxCents: 15,
+        },
+      },
+      totalTaxesCents: 15,
+      grossTotalCents: 80,
+      hashB64: "YhGVabcdEfg1234567890abcdefgh=",
+      certificateNumber: "9999",
+      otherInfo: "NU;0.80",
+    });
+    expect(qr).toBe(
+      "A:123456789*B:999999990*C:PT*D:FS*E:N*F:20190812*G:FS CDVF/12345*H:CDF7T5HD-12345*I1:PT*I7:0.65*I8:0.15*N:0.15*O:0.80*Q:YhGV*R:9999*S:NU;0.80",
+    );
+  });
+
+  it("QR omite opcionais sem dados e nunca inventa H/R (pré-certificação)", () => {
+    const qr = buildQrString({
+      issuerTin: "500000000",
+      customerTin: "123456789",
+      customerCountry: "PT",
+      invoiceType: "FT",
+      invoiceStatus: "N",
+      documentTs: Date.parse("2026-01-02T09:00:00Z"),
+      timeZone: "UTC",
+      invoiceNo: "FT VD/1",
+      atcud: null,
+      regions: { PT: qrRegionTotals("PT", { "2300": { taxableCents: 100, taxCents: 23 } }) },
+      totalTaxesCents: 23,
+      grossTotalCents: 123,
+      hashB64: "r/fYzzzzzzzzzzzzzzzzzzzzzzz=",
+      certificateNumber: null,
+    });
+    expect(qr).toBe(
+      "A:500000000*B:123456789*C:PT*D:FT*E:N*F:20260102*G:FT VD/1*I1:PT*I7:1.00*I8:0.23*N:0.23*O:1.23*Q:r/fY",
+    );
+    expect(qr).not.toContain("*H:");
+    expect(qr).not.toContain("*R:");
   });
 });
 

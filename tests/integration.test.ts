@@ -205,7 +205,7 @@ describe("checkout (POS)", () => {
     const sale = one<{ hash: string; prev_hash: string | null; document_number: string }>(
       `SELECT hash, prev_hash, document_number FROM sales WHERE id = ?`, res.saleId,
     );
-    expect(sale.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(sale.hash).toMatch(/^[A-Za-z0-9+/]{27}=$/); // Base-64 do SHA-1 (AT)
     expect(sale.prev_hash).toBeNull(); // primeira venda → génese
     expect(count(`SELECT id FROM sale_payments WHERE sale_id = ? AND method_key = 'cash'`, res.saleId)).toBe(1);
   });

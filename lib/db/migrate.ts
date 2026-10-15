@@ -2,6 +2,7 @@ import type { Db } from "./client";
 import { migration001Core } from "./migrations/001_core";
 import { migration002Commerce } from "./migrations/002_commerce";
 import { migration003Industry } from "./migrations/003_industry";
+import { migration004FiscalAt } from "./migrations/004_fiscal_at";
 
 export interface Migration {
   /** Ordered, immutable identifier. Never rename or reuse. */
@@ -19,6 +20,7 @@ export const MIGRATIONS: Migration[] = [
   migration001Core,
   migration002Commerce,
   migration003Industry,
+  migration004FiscalAt,
 ];
 
 export interface MigrationRecord {

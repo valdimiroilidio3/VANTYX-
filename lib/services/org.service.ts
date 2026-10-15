@@ -38,6 +38,15 @@ export interface OrgSettings {
   loyalty?: { enabled: boolean; pointsPerEuro: number; pointValueCents: number };
   receiptFooter?: string;
   receiptHeader?: string;
+  /** Região fiscal IVA: continente (PT), Açores (PT-AC) ou Madeira (PT-MA). */
+  taxRegion?: "PT" | "PT-AC" | "PT-MA";
+  /**
+   * Número de certificado de software atribuído pela AT (Portaria 363/2010).
+   * NULO até a AT emitir o certificado — o sistema nunca se declara
+   * certificado por si próprio; este campo só é preenchido pelo utilizador
+   * com o número real recebido da AT.
+   */
+  certificateNumber?: string;
   [key: string]: unknown;
 }
 

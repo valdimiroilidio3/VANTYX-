@@ -7,7 +7,18 @@ import {
   discountBpsOfSale,
   type PriceLineInput,
 } from "@/lib/domain/pricing";
-import { formatDocumentNumber, hashDocument } from "@/lib/domain/fiscal";
+import {
+  atGrossTotal,
+  atHash,
+  atHashControl,
+  atHashPrintable,
+  atInvoiceDate,
+  atSystemEntryDate,
+  buildAtcud,
+  buildQrString,
+  formatDocumentNumber,
+  qrRegionTotals,
+} from "@/lib/domain/fiscal";
 import {
   evaluateRules,
   resolveDecisions,
@@ -165,13 +176,13 @@ function nextDocumentNumber(
   orgId: string,
   docType: string,
   fiscalYear: number,
-): { seriesId: string; sequence: number; documentNumber: string } {
+): { seriesId: string; sequence: number; documentNumber: string; atcudValidationCode: string | null } {
   let series = db
     .prepare(
       `SELECT * FROM document_series WHERE org_id = ? AND doc_type = ? AND fiscal_year = ?`,
     )
     .get(orgId, docType, fiscalYear) as
-    | { id: string; prefix: string; next_number: number }
+    | { id: string; prefix: string; next_number: number; atcud_validation_code: string | null }
     | undefined;
   if (!series) {
     const id = newId("dser");
@@ -179,7 +190,7 @@ function nextDocumentNumber(
       `INSERT INTO document_series (id, org_id, doc_type, prefix, fiscal_year, next_number)
        VALUES (?, ?, ?, 'VD', ?, 1)`,
     ).run(id, orgId, docType, fiscalYear);
-    series = { id, prefix: "VD", next_number: 1 };
+    series = { id, prefix: "VD", next_number: 1, atcud_validation_code: null };
   }
   const sequence = series.next_number;
   db.prepare(`UPDATE document_series SET next_number = ? WHERE id = ?`).run(
@@ -190,16 +201,34 @@ function nextDocumentNumber(
     seriesId: series.id,
     sequence,
     documentNumber: formatDocumentNumber(docType, series.prefix, sequence),
+    /** Código de validação ATCUD atribuído pela AT à série (null = por comunicar). */
+    atcudValidationCode: series.atcud_validation_code ?? null,
   };
 }
 
-function lastChainHash(db: Db, orgId: string, docType: string): string | null {
+/**
+ * Hash do documento anterior da MESMA série e exercício (Portaria 363/2010,
+ * art. 6.º; Despacho 8632/2014): a cadeia segue a numeração sequencial do
+ * documento, não o relógio. Null no primeiro documento da série/exercício.
+ */
+function lastChainHash(db: Db, orgId: string, docType: string, fiscalYear: number): string | null {
   const row = db
     .prepare(
-      `SELECT hash FROM sales WHERE org_id = ? AND document_type = ? AND hash IS NOT NULL
-       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      `SELECT hash FROM sales WHERE org_id = ? AND document_type = ? AND fiscal_year = ? AND hash IS NOT NULL
+       ORDER BY sequence_number DESC, rowid DESC LIMIT 1`,
     )
-    .get(orgId, docType) as { hash: string } | undefined;
+    .get(orgId, docType, fiscalYear) as { hash: string } | undefined;
+  return row?.hash ?? null;
+}
+
+/** Cadeia das notas de crédito (tabela returns), por exercício. */
+function lastReturnChainHash(db: Db, orgId: string, fiscalYear: number): string | null {
+  const row = db
+    .prepare(
+      `SELECT hash FROM returns WHERE org_id = ? AND fiscal_year = ? AND hash IS NOT NULL
+       ORDER BY sequence_number DESC, rowid DESC LIMIT 1`,
+    )
+    .get(orgId, fiscalYear) as { hash: string } | undefined;
   return row?.hash ?? null;
 }
 
@@ -568,21 +597,22 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       );
     }
 
-    /* ---- Document ---- */
+    /* ---- Document (numeração + assinatura AT) ---- */
     const doc = nextDocumentNumber(db, orgId, "FT", fiscalYear);
-    const prevHash = lastChainHash(db, orgId, "FT");
+    const prevHash = lastChainHash(db, orgId, "FT", fiscalYear);
     const saleId = newId("sale");
-    const docHash = hashDocument(
-      {
-        docType: "FT",
-        documentNumber: doc.documentNumber,
-        totalCents: pricing.totalCents,
-        taxCents: pricing.taxCents,
-        createdAt: now,
-        status: "completed",
-      },
+    const timeZone = profile.timezone || "Europe/Lisbon";
+    const docHash = atHash({
+      invoiceDate: atInvoiceDate(now, timeZone),
+      systemEntryDate: atSystemEntryDate(now, timeZone),
+      invoiceNo: doc.documentNumber,
+      grossTotal: atGrossTotal(pricing.totalCents),
       prevHash,
+    });
+    const hashControl = atHashControl(
+      (settings as Record<string, unknown>).certificateNumber as string | undefined,
     );
+    const atcud = buildAtcud(doc.atcudValidationCode, doc.sequence);
 
     /* ---- Persist sale ---- */
     const costCentsTotal = lineMeta.reduce(
@@ -597,8 +627,8 @@ export function checkout(input: CheckoutInput): CheckoutResult {
          fiscal_year, status, channel, currency, subtotal_cents, discount_cents, tax_cents,
          net_cents, total_cents, paid_cents, change_cents, cost_cents, tax_breakdown,
          loyalty_earned, loyalty_redeemed, guest_count, notes, hash, prev_hash,
-         created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FT', ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         hash_control, atcud, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FT', ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       saleId, orgId, input.branchId, input.terminalId ?? null, cashSessionId,
       input.customerId ?? null, input.orderId ?? null, input.clientRef ?? null,
@@ -607,7 +637,7 @@ export function checkout(input: CheckoutInput): CheckoutResult {
       pricing.discountCents, pricing.taxCents, pricing.netCents, pricing.totalCents,
       paidConfirmed, changeCents, costCentsTotal, JSON.stringify(pricing.taxBreakdown),
       0, loyaltyRedeemed, input.guestCount ?? null, input.notes ?? null,
-      docHash, prevHash, input.actor.userId, now,
+      docHash, prevHash, hashControl, atcud, input.actor.userId, now,
     );
 
     const insertLine = db.prepare(
@@ -1113,30 +1143,33 @@ export function createReturn(input: ReturnInput): { returnId: string; documentNu
     }
 
     const returnId = newId("ret");
-    const prevHash = sale!.hash ?? null;
-    const docHash = hashDocument(
-      {
-        docType: "NC",
-        documentNumber: doc.documentNumber,
-        totalCents,
-        taxCents,
-        createdAt: now,
-        status: "completed",
-      },
+    // A NC encadeia com a NC anterior da mesma série/exercício (não com a venda).
+    const prevHash = lastReturnChainHash(db, input.orgId, fiscalYear);
+    const profile = getOrgProfile(input.orgId);
+    const timeZone = profile.timezone || "Europe/Lisbon";
+    const docHash = atHash({
+      invoiceDate: atInvoiceDate(now, timeZone),
+      systemEntryDate: atSystemEntryDate(now, timeZone),
+      invoiceNo: doc.documentNumber,
+      grossTotal: atGrossTotal(totalCents),
       prevHash,
+    });
+    const hashControl = atHashControl(
+      (profile.settings as Record<string, unknown>).certificateNumber as string | undefined,
     );
+    const atcud = buildAtcud(doc.atcudValidationCode, doc.sequence);
 
     db.prepare(
       `INSERT INTO returns
         (id, org_id, sale_id, document_number, sequence_number, fiscal_year, status,
          reason_code, restock, warehouse_id, note, subtotal_cents, tax_cents, total_cents,
-         prev_hash, hash, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         prev_hash, hash, hash_control, atcud, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       returnId, input.orgId, input.saleId, doc.documentNumber, doc.sequence, fiscalYear,
       input.reasonCode, input.restock ? 1 : 0, input.warehouseId ?? null,
       input.note ?? null, subtotalCents, taxCents, totalCents, prevHash, docHash,
-      input.actor.userId, now,
+      hashControl, atcud, input.actor.userId, now,
     );
 
     const insertRl = db.prepare(
@@ -1330,12 +1363,54 @@ export function receiptViewModel(orgId: string, saleId: string) {
   const profile = getOrgProfile(orgId);
   const sale = detail.sale as Record<string, unknown> & {
     document_number: string | null;
+    document_type: string | null;
     created_at: number;
     total_cents: number;
     tax_cents: number;
     status: string;
+    hash_control: string | null;
+    atcud: string | null;
+    customer_tax_id: string | null;
   };
-  const settings = profile.settings as OrgSettings & { receiptHeader?: string; receiptFooter?: string };
+  const settings = profile.settings as OrgSettings & {
+    receiptHeader?: string; receiptFooter?: string;
+    taxRegion?: string; certificateNumber?: string;
+  };
+
+  /* QR Code (Portaria 195/2020) — só emitido com dados reais: NIF do emitente
+   * configurado e documento assinado. Nunca inventamos ATCUD nem certificado. */
+  const issuerTin = String((detail.org as { tax_id: string | null }).tax_id ?? "").trim();
+  const region =
+    settings.taxRegion === "PT-AC" || settings.taxRegion === "PT-MA" ? settings.taxRegion : "PT";
+  const breakdown = JSON.parse(String(sale.tax_breakdown ?? "{}")) as Record<
+    string, { taxableCents: number; taxCents: number }
+  >;
+  const qrString =
+    issuerTin && sale.hash && sale.document_number
+      ? buildQrString({
+          issuerTin,
+          customerTin: sale.customer_tax_id ? String(sale.customer_tax_id).trim() : null,
+          customerCountry: "PT",
+          invoiceType: String(sale.document_type ?? "FT"),
+          invoiceStatus: sale.status === "void" ? "A" : "N",
+          documentTs: sale.created_at,
+          timeZone: profile.timezone || "Europe/Lisbon",
+          invoiceNo: String(sale.document_number),
+          atcud: sale.atcud ?? null,
+          regions: { [region]: qrRegionTotals(region, breakdown) },
+          totalTaxesCents: sale.tax_cents,
+          grossTotalCents: sale.total_cents,
+          hashB64: String(sale.hash),
+          certificateNumber: settings.certificateNumber ?? null,
+        })
+      : null;
+
+  const fiscalNotice =
+    profile.country !== "PT"
+      ? undefined
+      : settings.certificateNumber
+        ? `Processado por programa certificado n.º ${settings.certificateNumber}/AT.`
+        : "Documento processado por programa AINDA NÃO certificado pela AT (conformidade técnica Portaria 363/2010 implementada; candidatura pendente — ver docs/CERTIFICACAO-AT.md).";
   return {
     orgName: (detail.org as { name: string }).name,
     orgTaxId: (detail.org as { tax_id: string | null }).tax_id,
@@ -1365,11 +1440,13 @@ export function receiptViewModel(orgId: string, saleId: string) {
       amount: Number(p.amount_cents),
     })),
     hash: String(sale.hash ?? ""),
+    hash4: sale.hash ? atHashPrintable(String(sale.hash)) : "",
+    hashControl: sale.hash_control ?? null,
+    atcud: sale.atcud ?? null,
+    qr: qrString,
+    certified: Boolean(settings.certificateNumber),
     currency: profile.currency,
     status: sale.status,
-    fiscalNotice:
-      profile.country === "PT"
-        ? "Documento processado por VANTYX. Hash chain interno — certificação AT pendente de validação legal (ver docs/COMPLIANCE.md)."
-        : undefined,
+    fiscalNotice: fiscalNotice,
   };
 }

@@ -16,7 +16,7 @@ export const GET = routeHandler(async () => {
     .all(ctx.orgId);
   const lastDocuments = db
     .prepare(
-      `SELECT document_number, status, total_cents, created_at, hash, prev_hash
+      `SELECT document_number, status, total_cents, created_at, hash, prev_hash, atcud
        FROM sales WHERE org_id = ? AND document_number IS NOT NULL
        ORDER BY created_at DESC LIMIT 10`,
     )
@@ -32,7 +32,7 @@ export const GET = routeHandler(async () => {
     lastDocuments,
     creditNotes,
     complianceNotice:
-      "Numeração controlada + cadeia de hash SHA-256 ativas. Certificação AT (Portugal), ATCUD e QR Code exigem validação legal e adaptador fiscal configurado — ver docs/COMPLIANCE.md. Documentos finalizados nunca são editados; correções apenas via nota de crédito.",
+      "Numeração sequencial por série/exercício + assinatura SHA-1/Base-64 (Portaria 363/2010 e Despacho 8632/2014) + QR Code (Portaria 195/2020) implementados. O software AINDA NÃO é certificado pela AT: a certificação é um processo administrativo da empresa produtora — ver docs/CERTIFICACAO-AT.md. Documentos finalizados nunca são editados; correções apenas via nota de crédito.",
   };
 });
 

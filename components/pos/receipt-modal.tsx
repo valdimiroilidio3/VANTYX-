@@ -3,6 +3,7 @@
 import { Printer, RotateCcw } from "lucide-react";
 import { Button, Modal } from "@/components/ui";
 import { fmtMoney } from "@/lib/format";
+import { QrCode, qrSvgString } from "@/components/qr-code";
 
 export interface ReceiptVM {
   orgName: string;
@@ -15,6 +16,11 @@ export interface ReceiptVM {
   totals: { subtotal: number; discount: number; tax: number; total: number; paid: number; change: number };
   payments: { method: string; amount: number }[];
   hash: string;
+  hash4?: string;
+  hashControl?: string | null;
+  atcud?: string | null;
+  qr?: string | null;
+  certified?: boolean;
   currency: string;
   status: string;
   fiscalNotice?: string;
@@ -75,8 +81,11 @@ ${vm.payments.map((p) => `<tr><td>${esc(p.method)}</td><td class="r">${(p.amount
 ${vm.totals.change ? `<tr><td>Troco</td><td class="r">${(vm.totals.change / 100).toFixed(2)}</td></tr>` : ""}
 </table>
 <hr/>
+${vm.qr ? `<div class="c" style="margin:6px 0">${qrSvgString(vm.qr, 200)}</div>` : ""}
+${vm.atcud ? `<p class="c sm b">ATCUD: ${esc(vm.atcud)}</p>` : ""}
+${vm.certified ? `<p class="sm c">Processado por programa certificado n.º ${esc(String(vm.hashControl ?? "").split(".")[0] ?? "")}/AT</p>` : ""}
 ${vm.fiscalNotice ? `<p class="sm c">${esc(vm.fiscalNotice)}</p>` : ""}
-<p class="sm c">Hash: ${esc(vm.hash.slice(0, 16))}…</p>
+<p class="sm c">Hash: ${esc(vm.hash4 || vm.hash.slice(0, 4))}</p>
 <p class="c sm">${esc(vm.footer ?? "")}</p>
 </body></html>`);
   doc.close();
@@ -145,6 +154,17 @@ export function ReceiptModal({
               <p className="flex justify-between"><span>Troco</span><span>{fmtMoney(vm.totals.change, vm.currency)}</span></p>
             )}
           </div>
+          {(vm.qr || vm.atcud) && (
+            <div className="mt-3 flex flex-col items-center gap-1">
+              {vm.qr && (
+                <span className="rounded-lg bg-white p-1.5 ring-1 ring-black/10">
+                  <QrCode text={vm.qr} size={132} />
+                </span>
+              )}
+              {vm.atcud && <p className="font-mono text-[10px] font-bold">ATCUD: {vm.atcud}</p>}
+              <p className="font-mono text-[9px] text-graphite-400">Hash: {vm.hash4 || vm.hash.slice(0, 4)}</p>
+            </div>
+          )}
           {vm.fiscalNotice && (
             <p className="mt-2 text-center text-[9px] leading-tight text-graphite-400">{vm.fiscalNotice}</p>
           )}
